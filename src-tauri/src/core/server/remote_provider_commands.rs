@@ -23,7 +23,7 @@ pub struct RegisterProviderRequest {
     pub models: Vec<String>,
 }
 
-fn merge_register_api_keys(api_key: Option<String>, api_keys: Vec<String>) -> Vec<String> {
+pub(crate) fn merge_register_api_keys(api_key: Option<String>, api_keys: Vec<String>) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut push_unique = |s: String| {
         let t = s.trim().to_string();

@@ -10,6 +10,7 @@ import { KeyboardShortcutsProvider } from '@/providers/KeyboardShortcuts'
 import { DataProvider } from '@/providers/DataProvider'
 import { route } from '@/constants/routes'
 import { ExtensionProvider } from '@/providers/ExtensionProvider'
+import { WebAuthProvider } from '@/providers/WebAuthProvider'
 import { ToasterProvider } from '@/providers/ToasterProvider'
 import { useAnalytic } from '@/hooks/useAnalytic'
 import { PromptAnalytic } from '@/containers/analytics/PromptAnalytic'
@@ -119,11 +120,13 @@ function RootLayout() {
         <InterfaceProvider />
         <ToasterProvider />
         <TranslationProvider>
-          <ExtensionProvider>
-            <DataProvider />
-            <GlobalEventHandler />
-            {IS_LOGS_ROUTE ? <LogsLayout /> : <AppLayout />}
-          </ExtensionProvider>
+          <WebAuthProvider>
+            <ExtensionProvider>
+              <DataProvider />
+              <GlobalEventHandler />
+              {IS_LOGS_ROUTE ? <LogsLayout /> : <AppLayout />}
+            </ExtensionProvider>
+          </WebAuthProvider>
           {/* <TanStackRouterDevtools position="bottom-right" /> */}
           <ToolApproval />
           <AttachmentIngestionDialog />

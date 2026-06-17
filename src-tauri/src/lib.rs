@@ -68,6 +68,13 @@ macro_rules! invoke_commands_with_extras {
         core::server::commands::start_server,
         core::server::commands::stop_server,
         core::server::commands::get_server_status,
+        // Web UI server commands
+        core::web_server::commands::start_web_server,
+        core::web_server::commands::stop_web_server,
+        core::web_server::commands::get_web_server_status,
+        core::web_server::commands::get_web_server_config,
+        core::web_server::commands::set_web_password,
+        core::web_server::commands::set_web_server_autostart,
         // Remote provider commands
         core::server::remote_provider_commands::register_provider_config,
         core::server::remote_provider_commands::unregister_provider_config,
@@ -257,6 +264,8 @@ pub fn run() {
             download_manager: Arc::new(Mutex::new(DownloadManagerState::default())),
             mcp_active_servers: Arc::new(Mutex::new(HashMap::new())),
             server_handle: Arc::new(Mutex::new(None)),
+            web_server_handle: Arc::new(Mutex::new(None)),
+            web_password: Arc::new(Mutex::new(None)),
             tool_call_cancellations: Arc::new(Mutex::new(HashMap::new())),
             mcp_settings: Arc::new(Mutex::new(McpSettings::default())),
             mcp_shutdown_in_progress: Arc::new(Mutex::new(false)),
@@ -342,6 +351,14 @@ pub fn run() {
             setup::setup_theme_listener(app)?;
             #[cfg(target_os = "linux")]
             setup::shrink_gtk_headerbar(app);
+
+            // Auto-start the web UI server if the user enabled it.
+            {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    crate::core::web_server::commands::maybe_autostart(app_handle).await;
+                });
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

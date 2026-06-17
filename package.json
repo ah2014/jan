@@ -47,6 +47,8 @@
     "build:icon": "tauri icon ./src-tauri/icons/icon.png",
     "build:core": "cd core && yarn build && yarn pack",
     "build:web": "yarn workspace @janhq/web-app build",
+    "build:webui": "cross-env IS_WEB_APP=true yarn build:core && cross-env IS_WEB_APP=true yarn workspace @janhq/web-app build",
+    "dev:webui": "cross-env IS_WEB_APP=true yarn build:core && cross-env IS_WEB_APP=true yarn workspace @janhq/web-app dev",
     "build:extensions": "rimraf ./pre-install/*.tgz || true && yarn workspace @janhq/core build && cd extensions && yarn install && cd .. && run-script-os",
     "build:extensions:darwin": "cd extensions && yarn workspaces foreach -Apt run build:publish",
     "build:extensions:win32": "cd extensions && yarn workspaces foreach -Apt --exclude @janhq/mlx-extension run build:publish",
@@ -75,5 +77,5 @@
     "@types/react": "19.1.2",
     "@types/react-dom": "19.1.2"
   },
-  "packageManager": "yarn@4.5.3"
+  "packageManager": "yarn@4.5.3+sha512.3003a14012e2987072d244c720506549c1aab73ee728208f1b2580a9fd67b92d61ba6b08fe93f6dce68fd771e3af1e59a0afa28dd242dd0940d73b95fedd4e90"
 }

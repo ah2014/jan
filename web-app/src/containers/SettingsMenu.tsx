@@ -16,6 +16,7 @@ import {
   IconCpu,
   IconWorld,
   IconPaperclip,
+  IconDevices2,
 } from '@tabler/icons-react'
 import { useMatches, useNavigate } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
@@ -186,6 +187,11 @@ const SettingsMenu = () => {
       title: 'common:local_api_server',
       route: route.settings.local_api_server,
       icon: IconCircles,
+    },
+    {
+      title: 'Web Server',
+      route: route.settings.web_server,
+      icon: IconDevices2,
     },
     {
       title: 'common:https_proxy',

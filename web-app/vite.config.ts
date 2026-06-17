@@ -65,12 +65,19 @@ export default defineConfig(({ mode }) => {
       alias: {
         '@': path.resolve(__dirname, './src'),
         '@janhq/conversational-extension': path.resolve(__dirname, '../extensions/conversational-extension/src/index.ts'),
+        '@janhq/assistant-extension': path.resolve(__dirname, '../extensions/assistant-extension/src/index.ts'),
+        // Resolve the core package from its root (-> built dist, same as the
+        // node_modules resolution the desktop build uses). This makes
+        // `@janhq/core` resolvable from the statically-bundled extension
+        // sources too. Requires `yarn build:core` to have produced core/dist.
+        '@janhq/core': path.resolve(__dirname, '../core'),
       },
     },
     define: {
       IS_TAURI: JSON.stringify(process.env.IS_TAURI),
       IS_DEV: JSON.stringify(process.env.IS_DEV),
-      IS_WEB_APP: JSON.stringify(false),
+      // Web UI build: set with `cross-env IS_WEB_APP=true`.
+      IS_WEB_APP: JSON.stringify(process.env.IS_WEB_APP === 'true'),
       IS_MACOS: JSON.stringify(
         process.env.TAURI_ENV_PLATFORM?.includes('darwin') ?? false
       ),

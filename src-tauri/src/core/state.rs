@@ -53,6 +53,9 @@ pub struct AppState {
     pub download_manager: Arc<Mutex<DownloadManagerState>>,
     pub mcp_active_servers: Arc<Mutex<HashMap<String, serde_json::Value>>>,
     pub server_handle: Arc<Mutex<Option<ServerHandle>>>,
+    pub web_server_handle: Arc<Mutex<Option<crate::core::web_server::server::WebServerHandle>>>,
+    /// SHA-256 hex of the configured web UI password (live-mutable).
+    pub web_password: Arc<Mutex<Option<String>>>,
     pub tool_call_cancellations: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
     pub mcp_settings: Arc<Mutex<McpSettings>>,
     pub mcp_shutdown_in_progress: Arc<Mutex<bool>>,
@@ -73,6 +76,8 @@ impl Default for AppState {
             download_manager: Default::default(),
             mcp_active_servers: Default::default(),
             server_handle: Default::default(),
+            web_server_handle: Default::default(),
+            web_password: Default::default(),
             tool_call_cancellations: Default::default(),
             mcp_settings: Default::default(),
             mcp_shutdown_in_progress: Default::default(),

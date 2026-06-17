@@ -65,7 +65,14 @@ export function ExtensionProvider({ children }: PropsWithChildren) {
       setFinishedSetup(true)
     }, 20000)
 
-    setupExtensions().finally(() => clearTimeout(watchdog))
+    setupExtensions()
+      .catch((e) => console.error('Extension setup rejected:', e))
+      .finally(() => {
+        // Guard against a throw before the inner try-block (which would clear
+        // the watchdog without ever setting finishedSetup) — always render.
+        setFinishedSetup(true)
+        clearTimeout(watchdog)
+      })
 
     return () => {
       clearTimeout(watchdog)
@@ -85,7 +92,15 @@ export function ExtensionProvider({ children }: PropsWithChildren) {
   // Dismiss the loader only once the gated UI is ready, not on a fixed timer.
   useEffect(() => {
     if (!finishedSetup) return
-    if (isMainWindow()) emit('app-ready').catch(() => {})
+    if (isMainWindow()) {
+      // `emit` can throw synchronously when there's no Tauri bridge (web
+      // build); guard so the loader-removal below still runs.
+      try {
+        emit('app-ready').catch(() => {})
+      } catch {
+        /* no Tauri bridge */
+      }
+    }
     let removeTimer: ReturnType<typeof setTimeout>
     const raf = requestAnimationFrame(() => {
       document.body.classList.add('loaded')

@@ -81,6 +81,11 @@ build-web-app: install-web-app
 	yarn build:core
 	yarn build:web-app
 
+# Standalone web UI build, served by the Rust web server (IS_WEB_APP=true).
+build-web-ui: install-web-app
+	yarn build:core
+	yarn build:webui
+
 serve-web-app:
 	yarn serve:web-app
 

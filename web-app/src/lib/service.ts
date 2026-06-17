@@ -37,6 +37,30 @@ export function openExternalUrl(url: string) {
   window?.open(url, '_blank')
 }
 
+/**
+ * Web-only invoke: POST `{ route, args }` to the Jan web server's `/api/invoke`
+ * endpoint, which dispatches to the same command implementations the desktop
+ * app uses via Tauri. Returns the parsed JSON result or throws on error.
+ */
+async function webInvoke<T>(route: string, args?: InvokeArgs): Promise<T> {
+  const res = await fetch('/api/invoke', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ route, args: args ?? {} }),
+  })
+  if (!res.ok) {
+    let message = `Request failed: ${res.status}`
+    try {
+      const body = (await res.json()) as { error?: string }
+      if (body?.error) message = body.error
+    } catch {
+      /* ignore JSON parse errors */
+    }
+    throw new Error(message)
+  }
+  return (await res.json()) as Promise<T>
+}
+
 export const APIs = {
   ...Object.values(Routes).reduce((acc, proxy) => {
     return {
@@ -109,9 +133,8 @@ export const APIs = {
 
           return getServiceHub().core().invoke(command, args)
         } else {
-          // For Web platform, provide fallback implementations
-          console.warn(`API call '${proxy.route}' not supported in web environment`, args)
-          return Promise.resolve(null)
+          // Web platform: route to the Jan web server's /api/invoke endpoint.
+          return webInvoke(proxy.route, args)
         }
       },
     }

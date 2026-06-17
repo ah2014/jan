@@ -161,8 +161,7 @@ class PlatformServiceHub implements ServiceHub {
         this.pathService = new pathModule.TauriPathService()
         this.coreService = new coreModule.TauriCoreService()
         this.deepLinkService = new deepLinkModule.TauriDeepLinkService()
-      } else if (isPlatformIOS() || isPlatformAndroid()) {
-        const [
+      } else if (isPlatformIOS() || isPlatformAndroid()) {        const [
           themeModule,
           windowModule,
           eventsModule,
@@ -199,6 +198,17 @@ class PlatformServiceHub implements ServiceHub {
         this.pathService = new pathModule.TauriPathService()
         this.coreService = new coreModule.MobileCoreService() // Mobile service with pre-loaded extensions
         this.deepLinkService = new deepLinkModule.TauriDeepLinkService()
+      } else {
+        // Web UI build: keep the Default services (they delegate to the
+        // bundled extensions / no-op for native-only features) and swap in
+        // the WebCoreService (bundled extensions) + WebProvidersService
+        // (predefined provider templates, configurable in-browser).
+        const [coreModule, providersModule] = await Promise.all([
+          import('./core/web'),
+          import('./providers/web'),
+        ])
+        this.coreService = new coreModule.WebCoreService()
+        this.providersService = new providersModule.WebProvidersService()
       }
 
       this.initialized = true

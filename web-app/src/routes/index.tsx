@@ -11,6 +11,8 @@ import SetupScreen from '@/containers/SetupScreen'
 import { route } from '@/constants/routes'
 import { predefinedProviders } from '@/constants/providers'
 import { providerHasRemoteApiKeys } from '@/lib/provider-api-keys'
+import { Link } from '@tanstack/react-router'
+import { Button } from '@/components/ui/button'
 
 type ThreadModel = {
   id: string
@@ -69,6 +71,41 @@ function Index() {
   }, [setCurrentThreadId])
 
   if (!hasValidProviders) {
+    // On the web build there is no local model engine, so the desktop
+    // "download a model" setup screen is meaningless (and would hang trying
+    // to pull the Jan model). Instead, prompt the user to configure a
+    // provider — e.g. an OpenAI-compatible endpoint pointing at their own
+    // LAN llama.cpp server.
+    if (IS_WEB_APP) {
+      return (
+        <div className="flex h-full flex-col justify-center">
+          <HeaderPage>
+            <span className="font-medium text-base font-studio pr-3">
+              {t('chat:description')}
+            </span>
+          </HeaderPage>
+          <div className="h-full overflow-y-auto inline-flex flex-col gap-2 justify-center px-3">
+            <div className="mx-auto w-full md:w-4/5 xl:w-4/6 -mt-20">
+              <div className="text-center mb-4">
+                <h1 className="text-2xl mt-2 font-studio font-medium">
+                  Connect a model provider
+                </h1>
+                <p className="text-muted-foreground mt-2 max-w-md mx-auto">
+                  Add an OpenAI-compatible provider pointing at your inference
+                  server (for example a LAN llama.cpp instance), then return
+                  here to start chatting.
+                </p>
+              </div>
+              <div className="flex justify-center">
+                <Link to={route.settings.model_providers}>
+                  <Button>Configure providers</Button>
+                </Link>
+              </div>
+            </div>
+          </div>
+        </div>
+      )
+    }
     return <SetupScreen />
   }
 
