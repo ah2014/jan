@@ -44,12 +44,23 @@ vi.mock('@/components/ai-elements/tool', () => ({
 // Stub dialogs
 const editOnSaveRef = vi.hoisted(() => ({ current: null as any }))
 vi.mock('@/containers/dialogs/EditMessageDialog', () => ({
-  EditMessageDialog: ({ onSave, message }: any) => {
+  EditMessageDialog: ({ onSave, message, imageUrls }: any) => {
     editOnSaveRef.current = onSave
     return (
-      <button data-testid="edit-btn" onClick={() => onSave('edited: ' + message)}>
-        Edit
-      </button>
+      <div>
+        <button
+          data-testid="edit-btn"
+          onClick={() => onSave('edited: ' + message, imageUrls || [])}
+        >
+          Edit
+        </button>
+        <button
+          data-testid="edit-drop-img-btn"
+          onClick={() => onSave('edited: ' + message, [])}
+        >
+          Edit drop img
+        </button>
+      </div>
     )
   },
 }))
@@ -204,7 +215,72 @@ describe('MessageItem', () => {
       />
     )
     fireEvent.click(screen.getByTestId('edit-btn'))
-    expect(onEdit).toHaveBeenCalledWith('msg-1', expect.stringContaining('original'))
+    expect(onEdit).toHaveBeenCalledWith('msg-1', expect.stringContaining('original'), [])
+  })
+
+  it('forwards kept images through onEdit', () => {
+    const onEdit = vi.fn()
+    const url = 'data:image/png;base64,ABC'
+    render(
+      <MessageItem
+        message={
+          makeMsg({
+            role: 'user',
+            parts: [
+              { type: 'text', text: 'original' },
+              { type: 'file', mediaType: 'image/png', url },
+            ],
+          }) as any
+        }
+        isFirstMessage
+        isLastMessage
+        status={'ready' as any}
+        onEdit={onEdit}
+      />
+    )
+    fireEvent.click(screen.getByTestId('edit-btn'))
+    expect(onEdit).toHaveBeenCalledWith('msg-1', expect.any(String), [url])
+  })
+
+  it('forwards kept images through onEdit for assistant messages', () => {
+    const onEdit = vi.fn()
+    const url = 'data:image/png;base64,ABC'
+    render(
+      <MessageItem
+        message={
+          makeMsg({
+            role: 'assistant',
+            parts: [
+              { type: 'text', text: 'original' },
+              { type: 'file', mediaType: 'image/png', url },
+            ],
+          }) as any
+        }
+        isFirstMessage
+        isLastMessage
+        status={'ready' as any}
+        onEdit={onEdit}
+      />
+    )
+    fireEvent.click(screen.getByTestId('edit-btn'))
+    expect(onEdit).toHaveBeenCalledWith('msg-1', expect.any(String), [url])
+  })
+
+  it('forwards dropped images (empty) through onEdit', () => {
+    const onEdit = vi.fn()
+    render(
+      <MessageItem
+        message={
+          makeMsg({ role: 'user', parts: [{ type: 'text', text: 'original' }] }) as any
+        }
+        isFirstMessage
+        isLastMessage
+        status={'ready' as any}
+        onEdit={onEdit}
+      />
+    )
+    fireEvent.click(screen.getByTestId('edit-drop-img-btn'))
+    expect(onEdit).toHaveBeenCalledWith('msg-1', expect.any(String), [])
   })
 
   it('fires onDelete when delete dialog button clicked', () => {

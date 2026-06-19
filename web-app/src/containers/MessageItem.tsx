@@ -62,7 +62,7 @@ export type MessageItemProps = {
   onReasoningScroll?: () => void
   onReasoningScrollToBottom?: () => void
   onRegenerate?: (messageId: string) => void
-  onEdit?: (messageId: string, newText: string) => void
+  onEdit?: (messageId: string, newText: string, keptImages: string[]) => void
   onDelete?: (messageId: string) => void
   assistant?: { avatar?: React.ReactNode; name?: string }
   showAssistant?: boolean
@@ -101,8 +101,8 @@ export const MessageItem = memo(
     }, [onRegenerate, message.id])
 
     const handleEdit = useCallback(
-      (newText: string) => {
-        onEdit?.(message.id, newText)
+      (newText: string, keptImages: string[]) => {
+        onEdit?.(message.id, newText, keptImages)
       },
       [onEdit, message.id]
     )
@@ -630,6 +630,7 @@ export const MessageItem = memo(
                 {onEdit && !isStreaming && (
                   <EditMessageDialog
                     message={getFullTextContent()}
+                    imageUrls={imageUrls.length > 0 ? imageUrls : undefined}
                     onSave={handleEdit}
                   />
                 )}

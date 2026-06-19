@@ -22,7 +22,7 @@ import { useModelProvider } from '@/hooks/useModelProvider'
 interface EditMessageDialogProps {
   message: string
   imageUrls?: string[]
-  onSave: (message: string) => void
+  onSave: (message: string, keptImages: string[]) => void
   triggerElement?: React.ReactNode
 }
 
@@ -64,10 +64,15 @@ export function EditMessageDialog({
     const hasTextChanged = draft !== initialCleanPrompt
     const hasFilesChanged =
       JSON.stringify(keptFiles) !== JSON.stringify(initialFiles)
+    const hasImagesChanged =
+      JSON.stringify(keptImages) !== JSON.stringify(imageUrls || [])
 
-    if ((hasTextChanged || hasFilesChanged) && draft.trim()) {
+    if (
+      (hasTextChanged || hasFilesChanged || hasImagesChanged) &&
+      draft.trim()
+    ) {
       const finalMessage = injectFilesIntoPrompt(draft.trim(), keptFiles)
-      onSave(finalMessage)
+      onSave(finalMessage, keptImages)
       setIsOpen(false)
     }
   }

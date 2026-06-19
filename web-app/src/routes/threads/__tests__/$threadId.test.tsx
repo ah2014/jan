@@ -213,6 +213,14 @@ vi.mock('@/containers/MessageItem', () => ({
         edit
       </button>
       <button
+        data-testid={`edit-img-${message.id}`}
+        onClick={() =>
+          onEdit(message.id, 'edited text', ['data:image/png;base64,IMG1'])
+        }
+      >
+        edit-img
+      </button>
+      <button
         data-testid={`del-${message.id}`}
         onClick={() => onDelete(message.id)}
       >
@@ -356,7 +364,7 @@ vi.mock('@/hooks/useAutoScroll', () => ({
 vi.mock('@janhq/core', () => ({
   MessageStatus: { Ready: 'ready' },
   ChatCompletionRole: { Assistant: 'assistant', User: 'user' },
-  ContentType: { Text: 'text' },
+  ContentType: { Text: 'text', Image: 'image_url' },
   ExtensionTypeEnum: { VectorDB: 'vectorDB' },
   VectorDBExtension: class {},
 }))
@@ -512,6 +520,155 @@ describe('ThreadDetail route', () => {
     renderComponent()
     screen.getByTestId('edit-a1').click()
     expect(h.messagesState.updateMessage).toHaveBeenCalled()
+    expect(h.mockRegenerate).not.toHaveBeenCalled()
+  })
+
+  it('edit preserves kept image attachments in the updated message content', () => {
+    const imageUrl = 'data:image/png;base64,IMG1'
+    h.messagesState.getMessages = vi.fn(() => [
+      {
+        id: 'u1',
+        role: 'user',
+        content: [
+          { type: 'text', text: { value: 'hi', annotations: [] } },
+          { type: 'image_url', image_url: { url: imageUrl, detail: 'auto' } },
+        ],
+      },
+    ])
+    h.chatState.messages = [
+      {
+        id: 'u1',
+        role: 'user',
+        parts: [
+          { type: 'text', text: 'hi' },
+          { type: 'file', mediaType: 'image/png', url: imageUrl },
+        ],
+      },
+    ]
+    renderComponent()
+    h.messagesState.updateMessage.mockClear()
+    h.mockSetChatMessages.mockClear()
+    screen.getByTestId('edit-img-u1').click()
+
+    expect(h.messagesState.updateMessage).toHaveBeenCalledTimes(1)
+    const updated = h.messagesState.updateMessage.mock.calls[0][0]
+    const content = updated.content as any[]
+    expect(content[0].type).toBe('text')
+    expect(content[0].text.value).toBe('edited text')
+    expect(
+      content.some(
+        (c) => c.type === 'image_url' && c.image_url?.url === imageUrl
+      )
+    ).toBe(true)
+
+    expect(h.mockSetChatMessages).toHaveBeenCalledTimes(1)
+    const setter = h.mockSetChatMessages.mock.calls[0][0]
+    const next = typeof setter === 'function' ? setter(h.chatState.messages) : setter
+    const edited = next.find((m: any) => m.id === 'u1')
+    expect(edited.parts.some((p: any) => p.type === 'file' && p.url === imageUrl)).toBe(
+      true
+    )
+    expect(edited.parts.some((p: any) => p.type === 'text' && p.text === 'edited text')).toBe(
+      true
+    )
+  })
+
+  it('edit drops image attachments that are not in keptImages', () => {
+    const keptUrl = 'data:image/png;base64,IMG1'
+    const droppedUrl = 'data:image/png;base64,IMG2'
+    h.messagesState.getMessages = vi.fn(() => [
+      {
+        id: 'u1',
+        role: 'user',
+        content: [
+          { type: 'text', text: { value: 'hi', annotations: [] } },
+          { type: 'image_url', image_url: { url: keptUrl, detail: 'auto' } },
+          { type: 'image_url', image_url: { url: droppedUrl, detail: 'auto' } },
+        ],
+      },
+    ])
+    h.chatState.messages = [
+      {
+        id: 'u1',
+        role: 'user',
+        parts: [
+          { type: 'text', text: 'hi' },
+          { type: 'file', mediaType: 'image/png', url: keptUrl },
+          { type: 'file', mediaType: 'image/png', url: droppedUrl },
+        ],
+      },
+    ]
+    renderComponent()
+    h.messagesState.updateMessage.mockClear()
+    h.mockSetChatMessages.mockClear()
+    // edit-img keeps only IMG1
+    screen.getByTestId('edit-img-u1').click()
+
+    expect(h.messagesState.updateMessage).toHaveBeenCalledTimes(1)
+    const updated = h.messagesState.updateMessage.mock.calls[0][0]
+    const content = updated.content as any[]
+    expect(
+      content.some((c) => c.type === 'image_url' && c.image_url?.url === keptUrl)
+    ).toBe(true)
+    expect(
+      content.some((c) => c.type === 'image_url' && c.image_url?.url === droppedUrl)
+    ).toBe(false)
+
+    expect(h.mockSetChatMessages).toHaveBeenCalledTimes(1)
+    const setter = h.mockSetChatMessages.mock.calls[0][0]
+    const next = typeof setter === 'function' ? setter(h.chatState.messages) : setter
+    const edited = next.find((m: any) => m.id === 'u1')
+    expect(edited.parts.some((p: any) => p.type === 'file' && p.url === keptUrl)).toBe(
+      true
+    )
+    expect(edited.parts.some((p: any) => p.type === 'file' && p.url === droppedUrl)).toBe(
+      false
+    )
+  })
+
+  it('edit on an assistant message preserves kept image attachments', () => {
+    const imageUrl = 'data:image/png;base64,IMG1'
+    h.messagesState.getMessages = vi.fn(() => [
+      {
+        id: 'a1',
+        role: 'assistant',
+        content: [
+          { type: 'text', text: { value: 'hello', annotations: [] } },
+          { type: 'image_url', image_url: { url: imageUrl, detail: 'auto' } },
+        ],
+      },
+    ])
+    h.chatState.messages = [
+      {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'hello' },
+          { type: 'file', mediaType: 'image/png', url: imageUrl },
+        ],
+      },
+    ]
+    renderComponent()
+    h.messagesState.updateMessage.mockClear()
+    h.mockSetChatMessages.mockClear()
+    h.mockRegenerate.mockClear()
+    screen.getByTestId('edit-img-a1').click()
+
+    expect(h.messagesState.updateMessage).toHaveBeenCalledTimes(1)
+    const updated = h.messagesState.updateMessage.mock.calls[0][0]
+    const content = updated.content as any[]
+    expect(
+      content.some((c) => c.type === 'image_url' && c.image_url?.url === imageUrl)
+    ).toBe(true)
+
+    expect(h.mockSetChatMessages).toHaveBeenCalledTimes(1)
+    const setter = h.mockSetChatMessages.mock.calls[0][0]
+    const next = typeof setter === 'function' ? setter(h.chatState.messages) : setter
+    const edited = next.find((m: any) => m.id === 'a1')
+    expect(edited.parts.some((p: any) => p.type === 'file' && p.url === imageUrl)).toBe(
+      true
+    )
+    // Assistant edits must not trigger regeneration
     expect(h.mockRegenerate).not.toHaveBeenCalled()
   })
 

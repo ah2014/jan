@@ -977,7 +977,7 @@ function ThreadDetail() {
 
   // Handle edit message - updates the message and regenerates from it
   const handleEditMessage = useCallback(
-    (messageId: string, newText: string) => {
+    (messageId: string, newText: string, keptImages: string[] = []) => {
       const currentLocalMessages = useMessages.getState().getMessages(threadId)
       const messageIndex = currentLocalMessages.findIndex(
         (m) => m.id === messageId
@@ -993,14 +993,24 @@ function ThreadDetail() {
       >
       const cleanedMeta = { ...priorMeta }
       delete cleanedMeta.error
+
+      const editedContent = [
+        {
+          type: ContentType.Text,
+          text: { value: newText, annotations: [] },
+        },
+        ...(originalMessage.content || []).filter((c) => {
+          if (c.type === ContentType.Text) return false
+          if (c.type === ContentType.Image) {
+            const url = (c as { image_url?: { url?: string } }).image_url?.url
+            return typeof url === 'string' && keptImages.includes(url)
+          }
+          return true
+        }),
+      ]
       const updatedMessage = {
         ...originalMessage,
-        content: [
-          {
-            type: ContentType.Text,
-            text: { value: newText, annotations: [] },
-          },
-        ],
+        content: editedContent,
         metadata: cleanedMeta,
       }
       updateMessage(updatedMessage)
@@ -1009,9 +1019,28 @@ function ThreadDetail() {
       // Update chat messages for UI
       const updatedChatMessages = chatMessages.map((msg) => {
         if (msg.id === messageId) {
+          const editedParts = [
+            { type: 'text' as const, text: newText },
+            ...((msg.parts as unknown[]).filter((p) => {
+              const part = p as {
+                type?: string
+                mediaType?: string
+                url?: string
+              }
+              if (part.type === 'text') return false
+              if (
+                part.type === 'file' &&
+                typeof part.mediaType === 'string' &&
+                part.mediaType.startsWith('image/')
+              ) {
+                return typeof part.url === 'string' && keptImages.includes(part.url)
+              }
+              return true
+            }) as unknown[]),
+          ]
           return {
             ...msg,
-            parts: [{ type: 'text' as const, text: newText }],
+            parts: editedParts,
           }
         }
         return msg
