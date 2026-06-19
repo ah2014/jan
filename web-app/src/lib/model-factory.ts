@@ -623,6 +623,50 @@ function getRuntimeFetch(): typeof globalThis.fetch {
 }
 
 /**
+ * On the web build, route LLM traffic through the backend gateway so:
+ *   - API keys never reach the browser (the backend owns them),
+ *   - the (possibly non-CORS) llama.cpp / OpenAI-compatible upstream only
+ *     needs to be reachable from the server process, exactly like the desktop.
+ *
+ * The wrapper rewrites any absolute http(s) request to `/api/proxy`, passing
+ * the original URL in `X-Jan-Target-Url` and the provider name in
+ * `X-Jan-Provider`. Relative requests (e.g. our own `/api/*`) pass through.
+ */
+function createWebProxyFetch(providerName: string): typeof globalThis.fetch {
+  return async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const rawUrl = requestUrlOf(input)
+    if (!/^https?:\/\//i.test(rawUrl)) {
+      return globalThis.fetch(input, init)
+    }
+    const headers = new Headers(
+      (init?.headers as HeadersInit | undefined) ?? undefined
+    )
+    headers.set('X-Jan-Provider', providerName)
+    headers.set('X-Jan-Target-Url', rawUrl)
+    // We don't carry keys on web; the backend injects auth from the stored
+    // provider config.
+    headers.delete('Authorization')
+    headers.delete('x-api-key')
+    return globalThis.fetch('/api/proxy', { ...init, headers })
+  }
+}
+
+/**
+ * Pick the fetch implementation for an inference call. Desktop uses Tauri's
+ * HTTP plugin (server-side transport, no CORS). Web uses the backend proxy so
+ * keys stay server-side and the upstream need not allow CORS.
+ */
+function getInferenceFetch(
+  provider?: { provider?: string }
+): typeof globalThis.fetch {
+  const base = getRuntimeFetch()
+  if (!provider?.provider || isPlatformTauri()) {
+    return base
+  }
+  return createWebProxyFetch(provider.provider)
+}
+
+/**
  * Map of model keywords to their respective reasoning tags.
  * Used for models that use tags other than the default 'think'.
  */
@@ -901,12 +945,12 @@ export class ModelFactory {
     const fetchImpl =
       keyChain.length > 1
         ? createApiKeyRotatingFetch(
-            getRuntimeFetch(),
+            getInferenceFetch(provider),
             keyChain,
             parameters,
             'x-api-key'
           )
-        : createCustomFetch(getRuntimeFetch(), parameters)
+        : createCustomFetch(getInferenceFetch(provider), parameters)
 
     const anthropic = createAnthropic({
       apiKey: keyChain[0] ?? provider.api_key ?? '',
@@ -940,12 +984,12 @@ export class ModelFactory {
     const fetchImpl =
       keyChain.length > 1
         ? createApiKeyRotatingFetch(
-            getRuntimeFetch(),
+            getInferenceFetch(provider),
             keyChain,
             parameters,
             'authorization-bearer'
           )
-        : createCustomFetch(getRuntimeFetch(), parameters)
+        : createCustomFetch(getInferenceFetch(provider), parameters)
 
     const openai = createOpenAI({
       apiKey: keyChain[0] ?? provider.api_key ?? '',
@@ -979,12 +1023,12 @@ export class ModelFactory {
     const fetchImpl =
       keyChain.length > 1
         ? createApiKeyRotatingFetch(
-            getRuntimeFetch(),
+            getInferenceFetch(provider),
             keyChain,
             parameters,
             'authorization-bearer'
           )
-        : createCustomFetch(getRuntimeFetch(), parameters)
+        : createCustomFetch(getInferenceFetch(provider), parameters)
 
     const mistral = createMistral({
       apiKey: keyChain[0] ?? provider.api_key ?? '',
@@ -1017,12 +1061,12 @@ export class ModelFactory {
     const fetchImpl =
       keyChain.length > 1
         ? createApiKeyRotatingFetch(
-            getRuntimeFetch(),
+            getInferenceFetch(provider),
             keyChain,
             parameters,
             'authorization-bearer'
           )
-        : createCustomFetch(getRuntimeFetch(), parameters)
+        : createCustomFetch(getInferenceFetch(provider), parameters)
 
     const xai = createXai({
       apiKey: keyChain[0] ?? provider.api_key ?? '',
@@ -1052,7 +1096,7 @@ export class ModelFactory {
     }
 
     const keyChain = providerRemoteApiKeyChain(provider)
-    const fetchImpl = createCustomFetch(getRuntimeFetch(), parameters)
+    const fetchImpl = createCustomFetch(getInferenceFetch(provider), parameters)
 
     const rawBase = provider.base_url?.trim()
     const baseURL = rawBase
@@ -1094,12 +1138,12 @@ export class ModelFactory {
     let fetchImpl: typeof globalThis.fetch =
       keyChain.length > 1
         ? createApiKeyRotatingFetch(
-            getRuntimeFetch(),
+            getInferenceFetch(provider),
             keyChain,
             parameters,
             'authorization-bearer'
           )
-        : createCustomFetch(getRuntimeFetch(), parameters)
+        : createCustomFetch(getInferenceFetch(provider), parameters)
 
     if (provider.provider === 'groq') {
       fetchImpl = withAssistantReasoningStripped(fetchImpl)

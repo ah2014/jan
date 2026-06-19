@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod proxy;
+pub mod provider_store;
 pub mod remote_provider_commands;
 #[cfg(test)]
 pub mod tests;

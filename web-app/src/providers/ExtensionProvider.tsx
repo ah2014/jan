@@ -1,5 +1,6 @@
 import { ExtensionManager } from '@/lib/extension'
 import { APIs } from '@/lib/service'
+import { hydrateProvidersFromBackend } from '@/lib/provider-shared-hydrate'
 import { EventEmitter } from '@/services/events/EventEmitter'
 import { EngineManager, ModelManager } from '@janhq/core'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
@@ -54,6 +55,12 @@ export function ExtensionProvider({ children }: PropsWithChildren) {
       console.error('Extension setup failed:', e)
     } finally {
       setFinishedSetup(true)
+      // Desktop main window only: hydrate the local provider store from the
+      // shared `providers.json` (read-only — never writes back, so it can't
+      // clobber the shared file). Keeps the desktop UI in sync with the web UI.
+      if (isMainWindow()) {
+        void hydrateProvidersFromBackend()
+      }
     }
   }, [])
 

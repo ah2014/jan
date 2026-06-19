@@ -5,17 +5,22 @@
 //!   * the static web UI build (with SPA fallback to `index.html`),
 //!   * `POST /api/invoke` — a JSON dispatch endpoint that mirrors Tauri's
 //!     `invoke()` model and reuses the existing command implementations,
+//!   * `POST /api/proxy` — a server-side LLM gateway that forwards requests to
+//!     the configured provider's `base_url`, streaming the response back. The
+//!     web UI targets this instead of the provider directly, so API keys never
+//!     reach the browser and the (possibly non-CORS) llama.cpp /
+//!     OpenAI-compatible server only needs to be reachable from this process,
 //!   * `POST /api/auth/login` | `logout` | `GET /api/auth/check` — the
 //!     single-password gate.
 //!
-//! Inference is not proxied: the web UI calls the user's OpenAI-compatible
-//! provider (e.g. a LAN llama.cpp server) directly via the provider's
-//! `base_url`, exactly like the desktop app does.
+//! Provider/model settings are shared with the desktop app: both read/write the
+//! same persisted `providers.json` via the command surface above.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use futures_util::StreamExt;
 use hyper::body::HttpBody;
 use hyper::header::{CONTENT_TYPE, SET_COOKIE};
 use hyper::service::{make_service_fn, service_fn};
@@ -30,7 +35,11 @@ use crate::core::filesystem::commands::{
     exists_sync, file_stat, join_path, mkdir, read_file_sync, readdir_sync, rm,
     write_file_sync,
 };
-use crate::core::state::AppState;
+use crate::core::server::remote_provider_commands::{
+    remove_provider_config, upsert_provider_config, upsert_provider_model_capabilities,
+    RegisterProviderRequest,
+};
+use crate::core::state::{AppState, ProviderConfig};
 use crate::core::threads::commands::{
     create_message, create_thread, create_thread_assistant, delete_message,
     delete_thread, get_thread_assistant, list_messages, list_threads,
@@ -187,6 +196,15 @@ async fn handle_request(req: Request<Body>, ctx: WebCtx) -> Result<Response<Body
         }
         if path == "/api/invoke" && method == Method::POST {
             return Ok(handle_invoke(req, &ctx).await);
+        }
+        // Server-side LLM gateway: the web UI forwards provider requests here
+        // so API keys never reach the browser and the (possibly non-CORS)
+        // llama.cpp / OpenAI-compatible server only needs to be reachable from
+        // this process. Both `chat/completions` (streamed) and `/models`
+        // (buffered) are handled by a single transparent proxy that reuses the
+        // stored provider config.
+        if path == "/api/proxy" {
+            return Ok(handle_proxy(req, &ctx).await);
         }
         return Ok(err_response(StatusCode::NOT_FOUND, "Unknown API endpoint"));
     }
@@ -402,16 +420,22 @@ async fn dispatch(
         }
 
         // -- Provider configs --
+        // NOTE: the web UI never needs raw API keys — inference is proxied
+        // server-side via `/api/proxy`, which looks the key up from the
+        // authoritative in-memory map. Redact on the way out so keys are never
+        // shipped to the browser.
         "listProviderConfigs" => {
             let configs = provider_configs_from(app_handle);
             let g = configs.lock().await;
-            Ok(json!(g.values().cloned().collect::<Vec<_>>()))
+            let redacted: Vec<ProviderConfig> =
+                g.values().cloned().map(redact_provider_config).collect();
+            Ok(json!(redacted))
         }
         "getProviderConfig" => {
             let provider = arg_str(args, &["provider"])?;
             let configs = provider_configs_from(app_handle);
             let g = configs.lock().await;
-            Ok(json!(g.get(&provider).cloned()))
+            Ok(json!(g.get(&provider).cloned().map(redact_provider_config)))
         }
         "registerProviderConfig" => {
             // Normalize camelCase -> snake_case (the Tauri invoke path does
@@ -424,16 +448,39 @@ async fn dispatch(
                     ("customHeaders", "custom_headers"),
                 ],
             );
-            let request: crate::core::server::remote_provider_commands::RegisterProviderRequest =
+            let request: RegisterProviderRequest =
                 serde_json::from_value(normalized)
                     .map_err(|e| format!("Invalid provider config: {e}"))?;
-            register_provider_config_inner(app_handle, request).await?;
+            upsert_provider_config(app_handle, request).await?;
             Ok(json!({}))
         }
         "unregisterProviderConfig" => {
             let provider = arg_str(args, &["provider"])?;
-            let configs = provider_configs_from(app_handle);
-            configs.lock().await.remove(&provider);
+            remove_provider_config(app_handle, &provider).await?;
+            Ok(json!({}))
+        }
+        "setProviderModelCapabilities" => {
+            // Targeted update: preserves the provider's API key/base_url, so the
+            // web UI (which never holds the key) can persist per-model capability
+            // overrides (vision/audio/…).
+            let provider = arg_str(args, &["provider"])?;
+            let model_id = arg_str(args, &["modelId", "model_id"])?;
+            let capabilities = args
+                .get("capabilities")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            upsert_provider_model_capabilities(
+                app_handle,
+                &provider,
+                &model_id,
+                capabilities,
+            )
+            .await?;
             Ok(json!({}))
         }
 
@@ -500,39 +547,279 @@ async fn dispatch(
     }
 }
 
-/// Inlined body of `register_provider_config` (lives behind a `State<AppState>`
-/// in the Tauri command, which is awkward to reconstruct here).
-async fn register_provider_config_inner(
+/// Strip sensitive material from a [`ProviderConfig`] before it leaves the
+/// server over the web `/api/invoke` boundary. The browser has no use for keys
+/// because all inference is proxied through `/api/proxy`, which reads keys from
+/// the authoritative in-memory map.
+fn redact_provider_config(mut c: ProviderConfig) -> ProviderConfig {
+    c.api_key = None;
+    c.api_keys.clear();
+    c
+}
+
+// --- Server-side LLM proxy ---------------------------------------------------
+
+/// Header carrying the configured provider name whose `base_url` / keys should
+/// be used to reach the upstream.
+const H_PROVIDER: &str = "x-jan-provider";
+/// Header carrying the absolute upstream URL the client wants to hit. The
+/// proxy validates it against the provider's stored `base_url` to prevent SSRF.
+const H_TARGET: &str = "x-jan-target-url";
+
+/// Returns `true` for request headers the proxy must NOT relay upstream.
+///
+/// Three categories are dropped:
+///   * **control headers** (`x-jan-*`) — consumed by the proxy itself,
+///   * **auth headers** (`authorization`, `x-api-key`) — the proxy owns these,
+///     injecting them from the provider's stored key chain,
+///   * **hop-by-hop / transport headers** (`host`, `content-length`, ...) —
+///     these are per-connection and must not be forwarded; reqwest recomputes
+///     them for the outgoing request.
+fn is_hop_or_control_header(name: &str) -> bool {
+    matches!(
+        name.to_ascii_lowercase().as_str(),
+        "x-jan-provider"
+            | "x-jan-target-url"
+            | "authorization"
+            | "x-api-key"
+            | "host"
+            | "content-length"
+            | "connection"
+            | "transfer-encoding"
+            | "keep-alive"
+            | "te"
+            | "trailer"
+            | "upgrade"
+            | "proxy-authorization"
+            | "proxy-authenticate"
+    )
+}
+
+/// Resolve and clone the provider config the client asked for.
+async fn provider_config_for(
     app_handle: &AppHandle,
-    request: crate::core::server::remote_provider_commands::RegisterProviderRequest,
-) -> Result<(), String> {
-    use crate::core::server::remote_provider_commands::merge_register_api_keys;
-    use crate::core::state::{ProviderConfig, ProviderCustomHeader};
-
+    provider: &str,
+) -> Option<ProviderConfig> {
     let configs = provider_configs_from(app_handle);
-    let mut g = configs.lock().await;
+    let g = configs.lock().await;
+    g.get(provider).cloned()
+}
 
-    let key_chain = merge_register_api_keys(request.api_key.clone(), request.api_keys.clone());
-    let api_key = key_chain.first().cloned();
+/// Shared reqwest client reused across `/api/proxy` requests so HTTP keep-alive
+/// and TLS sessions are pooled. TCP/TLS defaults are fine for a LAN-hosted
+/// gateway; the upstream is always a user-configured provider.
+static PROXY_CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
 
-    let config = ProviderConfig {
-        provider: request.provider.clone(),
-        api_key,
-        api_keys: key_chain,
-        base_url: request.base_url,
-        custom_headers: request
-            .custom_headers
-            .into_iter()
-            .map(|h| ProviderCustomHeader {
-                header: h.header,
-                value: h.value,
-            })
-            .collect(),
-        models: request.models,
+fn proxy_client() -> &'static reqwest::Client {
+    PROXY_CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .build()
+            .expect("failed to build proxy reqwest client")
+    })
+}
+
+/// `OPTIONS` preflight + common response headers for the proxy, so the SPA can
+/// use the endpoint cross-origin-free from its own origin.
+fn proxy_cors(builder: hyper::http::response::Builder) -> hyper::http::response::Builder {
+    builder
+        .header("access-control-allow-origin", "sameorigin")
+        .header("access-control-allow-headers", "*")
+        .header("access-control-allow-methods", "GET, POST, OPTIONS")
+}
+
+/// Look up the provider, validate the target URL, and forward the request,
+/// streaming the response back. Honours the provider's API-key chain (rotating
+/// on 401/403/429) and custom headers, all server-side.
+async fn handle_proxy(req: Request<Body>, ctx: &WebCtx) -> Response<Body> {
+    let method = req.method().clone();
+
+    // CORS preflight.
+    if method == Method::OPTIONS {
+        return proxy_cors(Response::builder().status(StatusCode::NO_CONTENT))
+            .body(Body::empty())
+            .unwrap();
+    }
+
+    let provider = req
+        .headers()
+        .get(H_PROVIDER)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let target = req
+        .headers()
+        .get(H_TARGET)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+
+    let (provider, target) = match (provider, target) {
+        (Some(p), Some(t)) if !p.is_empty() && !t.is_empty() => (p, t),
+        _ => {
+            return err_response(
+                StatusCode::BAD_REQUEST,
+                "Missing x-jan-provider or x-jan-target-url header",
+            )
+        }
     };
 
-    g.insert(request.provider.clone(), config);
-    Ok(())
+    let config = match provider_config_for(&ctx.app_handle, &provider).await {
+        Some(c) => c,
+        None => {
+            return err_response(
+                StatusCode::NOT_FOUND,
+                &format!("No configured provider named '{provider}'"),
+            )
+        }
+    };
+
+    // Security: only allow proxying to URLs within this provider's configured
+    // base_url. Prevents an authenticated web user from abusing the gateway as
+    // an open SSRF relay.
+    let base = match config.base_url.as_deref() {
+        Some(b) if !b.is_empty() => b.trim_end_matches('/'),
+        _ => {
+            return err_response(
+                StatusCode::BAD_REQUEST,
+                &format!("Provider '{provider}' has no base_url configured"),
+            )
+        }
+    };
+    if !target.starts_with(base) {
+        return err_response(
+            StatusCode::FORBIDDEN,
+            "Target URL is outside the provider's configured base_url",
+        );
+    }
+
+    // Capture the client-supplied headers once, before the retry loop. We
+    // forward them upstream (minus the control/hop-by-hop/auth headers the
+    // proxy owns) so provider-specific SDK headers — e.g. `anthropic-version`,
+    // `openai-beta`, `accept` — actually reach the upstream instead of being
+    // silently dropped. Config `custom_headers` and the injected auth key are
+    // applied AFTER, so they take precedence over anything the client sent.
+    let client_headers: Vec<(String, String)> = req
+        .headers()
+        .iter()
+        .filter(|(name, _)| !is_hop_or_control_header(name.as_str()))
+        .filter_map(|(name, value)| {
+            Some((
+                name.as_str().to_string(),
+                value.to_str().ok()?.to_string(),
+            ))
+        })
+        .collect();
+    // Preserve prior default behaviour: if the client didn't send a
+    // content-type, assume JSON (the gateway only serves LLM JSON APIs).
+    let has_content_type = client_headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"));
+
+    let body_bytes = match read_body(req).await {
+        Ok(b) => b,
+        Err(e) => return err_response(StatusCode::BAD_REQUEST, &e),
+    };
+
+    let client = proxy_client();
+    let key_chain = config.bearer_key_chain();
+    let attempts: Vec<Option<String>> = if key_chain.is_empty() {
+        vec![None]
+    } else {
+        key_chain.into_iter().map(Some).collect()
+    };
+
+    for (idx, key_opt) in attempts.iter().enumerate() {
+        let mut rb = client.request(method.clone(), &target);
+        // 1) Forward the client-supplied headers (already filtered).
+        for (name, value) in &client_headers {
+            rb = rb.header(name.as_str(), value.as_str());
+        }
+        if !has_content_type {
+            rb = rb.header("content-type", "application/json");
+        }
+        // 2) Apply the provider's configured custom headers on top — these
+        //    intentionally override anything the browser sent.
+        for h in &config.custom_headers {
+            rb = rb.header(h.header.as_str(), h.value.as_str());
+        }
+        // 3) Inject the auth key last so it wins.
+        if let Some(k) = key_opt {
+            rb = rb.header("authorization", format!("Bearer {k}"));
+        }
+
+        let upstream = match rb.body(body_bytes.clone()).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                let msg = format!("Failed to reach provider {provider}: {e}");
+                log::error!("{msg}");
+                return err_response(StatusCode::BAD_GATEWAY, &msg);
+            }
+        };
+
+        let status = upstream.status();
+
+        // Key rotation: drain the error body and retry with the next key.
+        if http_status_indicates_api_key_retry(status)
+            && idx + 1 < attempts.len()
+        {
+            let _ = upstream.bytes().await;
+            log::warn!(
+                "Upstream {status} for provider {provider} on key #{idx}; trying next key"
+            );
+            continue;
+        }
+
+        // Build the response, forwarding status + content-type + SSE hints.
+        let mut builder = Response::builder().status(status);
+        if let Some(ct) = upstream.headers().get("content-type") {
+            builder = builder.header("content-type", ct);
+        }
+        if status.is_success() {
+            // Discourage any intermediary from buffering the stream.
+            builder = builder
+                .header("cache-control", "no-cache")
+                .header("x-accel-buffering", "no");
+        }
+        builder = proxy_cors(builder);
+
+        // Stream the upstream body straight to the client. `bytes_stream()` works
+        // for both SSE (`text/event-stream`) and buffered JSON responses.
+        let (mut sender, body) = Body::channel();
+        let mut stream = upstream.bytes_stream();
+        tokio::spawn(async move {
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(c) => {
+                        if sender.send_data(c).await.is_err() {
+                            log::debug!("Web proxy client disconnected mid-stream");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        log::error!("Web proxy upstream stream error: {e}");
+                        break;
+                    }
+                }
+            }
+            log::debug!("Web proxy stream complete");
+        });
+
+        return builder.body(body).unwrap();
+    }
+
+    // Exhausted all keys.
+    err_response(
+        StatusCode::UNAUTHORIZED,
+        &format!(
+            "All configured API keys for provider '{provider}' were rejected"
+        ),
+    )
+}
+
+/// `true` for HTTP statuses that typically mean "try the next API key".
+fn http_status_indicates_api_key_retry(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status.as_u16(),
+        401 | 403 | 429
+    )
 }
 
 // --- Static file serving -----------------------------------------------------

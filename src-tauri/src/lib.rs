@@ -80,6 +80,7 @@ macro_rules! invoke_commands_with_extras {
         core::server::remote_provider_commands::unregister_provider_config,
         core::server::remote_provider_commands::get_provider_config,
         core::server::remote_provider_commands::list_provider_configs,
+        core::server::remote_provider_commands::set_provider_model_capabilities,
         // MCP commands
         core::mcp::commands::get_tools,
         core::mcp::commands::get_tools_for_servers,
@@ -356,6 +357,21 @@ pub fn run() {
             {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
+                    // Hydrate remote provider configs from disk before anything
+                    // that consumes them (web UI server / Local API Server
+                    // proxy) starts, so the web app shares the desktop's
+                    // providers/models from the first request.
+                    let loaded =
+                        crate::core::server::provider_store::load_provider_configs(&app_handle);
+                    if !loaded.is_empty() {
+                        let state = app_handle.state::<AppState>();
+                        let mut g = state.provider_configs.lock().await;
+                        let count = loaded.len();
+                        for (k, v) in loaded {
+                            g.insert(k, v);
+                        }
+                        log::info!("Loaded {count} provider config(s) from disk");
+                    }
                     crate::core::web_server::commands::maybe_autostart(app_handle).await;
                 });
             }

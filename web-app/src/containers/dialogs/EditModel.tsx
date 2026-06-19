@@ -143,6 +143,24 @@ export const DialogEditModel = ({
         models: updatedModels,
       })
 
+      // Persist per-model capabilities to the shared backend store so they
+      // survive reloads on the web UI (which has no engine to re-detect them).
+      if (capabilitiesChanged && selectedModelId) {
+        try {
+          await window.core.api.setProviderModelCapabilities({
+            provider: provider.provider,
+            modelId: selectedModelId,
+            capabilities:
+              modelUpdate.capabilities as unknown as string[],
+          })
+        } catch (e) {
+          console.warn(
+            '[EditModel] failed to persist capabilities to backend',
+            e
+          )
+        }
+      }
+
       // Update original values
       if (nameChanged) setOriginalDisplayName(displayName)
       if (capabilitiesChanged) setOriginalCapabilities(capabilities)

@@ -24,6 +24,12 @@ pub struct ProviderConfig {
     pub base_url: Option<String>,
     pub custom_headers: Vec<ProviderCustomHeader>,
     pub models: Vec<String>,
+    /// Per-model user overrides keyed by model id. Only the capabilities the
+    /// user explicitly set (e.g. vision/audio) live here — this is the shared,
+    /// persistent store consulted by the web UI (which has no engine to detect
+    /// them) and mirrored into the desktop store on hydration.
+    #[serde(default)]
+    pub model_capabilities: HashMap<String, Vec<String>>,
 }
 
 impl ProviderConfig {

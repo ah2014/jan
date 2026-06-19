@@ -25,6 +25,17 @@ export const AppRoutes = [
   'getConnectedServers',
   'readLogs',
   'changeAppDataFolder',
+  // Provider configs. Handled by Tauri command on desktop and by the web
+  // server's `/api/invoke` dispatcher on web. The web path returns redacted
+  // configs (no API keys) — inference is proxied server-side via `/api/proxy`.
+  'listProviderConfigs',
+  'getProviderConfig',
+  'registerProviderConfig',
+  'unregisterProviderConfig',
+  // Targeted per-model capability override (vision/audio/…). Preserves the
+  // provider's key/base_url, so the web UI (which never holds the key) can
+  // persist model settings into the shared `providers.json`.
+  'setProviderModelCapabilities',
 ]
 // Define API routes based on different route types
 export const Routes = [...CoreRoutes, ...APIRoutes, ...AppRoutes].map((r) => ({
