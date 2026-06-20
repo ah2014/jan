@@ -1,5 +1,50 @@
 # AGENTS.md
 
+## Toolchain prerequisites
+
+The `yarn` commands below rely on **Yarn 4.5.3**, pinned via the
+`packageManager` field in `package.json`. Yarn 4 is provided by **corepack**,
+which is bundled with Node.js (not installed separately).
+
+> ⚠️ **Use Node 26.** This repo does **not** work with the Node 25 that is the
+> `nvm` default on this machine — that build ships Yarn **1.22.22** and **no
+> `corepack` binary**, so every `yarn` command aborts with:
+> `error This project's package.json defines "packageManager": "yarn@4.5.3".
+> However the current global version of Yarn is 1.22.22.`
+> Node **26.3.0** ships Yarn **4.5.3** + corepack **0.35.0** out of the box, so
+> no extra setup is needed once it is active.
+
+### Exact steps (copy-paste, works in non-interactive agent shells)
+
+`nvm` is **not** loaded automatically in non-interactive shells — it must be
+sourced first, otherwise you get `nvm: command not found`:
+
+```bash
+# 1. Load nvm (required once per shell — it is NOT on PATH by default here)
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+# 2. Switch to Node 26 (→ node v26.3.0, yarn 4.5.3, corepack 0.35.0)
+nvm use 26
+
+# 3. Sanity check — all three should now be the right versions
+node -v && yarn --version && corepack --version
+```
+
+If you still see the `packageManager` mismatch error after this, the shell fell
+back to Node 25 — re-run `nvm use 26` (or prefix each command with
+`nvm exec 26 yarn ...`). Do **not** run `corepack enable` / `npm i -g corepack`;
+the Node 26 install already provides it.
+
+### Typecheck (no dedicated script)
+
+There is no `typecheck` script — run the TypeScript compiler directly in the
+`web-app` workspace:
+
+```bash
+yarn workspace @janhq/web-app exec tsc -b
+```
+
 ## Verification commands
 
 Run these before considering work done.
