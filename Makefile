@@ -245,6 +245,11 @@ endif
 build: install-and-build install-rust-targets
 	yarn build
 
+# Build the .deb installer only (Linux; skips AppImage).
+build-deb:
+	chmod +x src-tauri/build-utils/buildDeb.sh
+	./src-tauri/build-utils/buildDeb.sh
+
 clean:
 ifeq ($(DETECTED_OS),Windows)
 	-powershell -Command "Get-ChildItem -Path . -Include node_modules, .next, dist, build, out, .turbo, .yarn -Recurse -Directory | Remove-Item -Recurse -Force"

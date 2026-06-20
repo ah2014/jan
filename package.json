@@ -38,6 +38,7 @@
     "build:cli": "make build-cli",
     "build:tauri:win32": "yarn download:bin && yarn build:cli && yarn tauri build",
     "build:tauri:linux": "yarn download:bin && yarn build:cli && NO_STRIP=1 ./src-tauri/build-utils/shim-linuxdeploy.sh yarn tauri build && ./src-tauri/build-utils/buildAppImage.sh",
+    "build:tauri:linux:deb": "./src-tauri/build-utils/buildDeb.sh",
     "build:tauri:darwin": "yarn download:bin && yarn build:mlx-server && yarn build:cli && yarn tauri build --target universal-apple-darwin",
     "build:tauri": "yarn build:icon && yarn copy:assets:tauri && run-script-os",
     "build:tauri:plugin:api": "cd src-tauri/plugins && yarn install && cd ../.. && run-script-os",

@@ -1019,24 +1019,18 @@ function ThreadDetail() {
       // Update chat messages for UI
       const updatedChatMessages = chatMessages.map((msg) => {
         if (msg.id === messageId) {
-          const editedParts = [
+          const editedParts: typeof msg.parts = [
             { type: 'text' as const, text: newText },
-            ...((msg.parts as unknown[]).filter((p) => {
-              const part = p as {
-                type?: string
-                mediaType?: string
-                url?: string
-              }
-              if (part.type === 'text') return false
+            ...msg.parts.filter((p) => {
+              if (p.type === 'text') return false
               if (
-                part.type === 'file' &&
-                typeof part.mediaType === 'string' &&
-                part.mediaType.startsWith('image/')
+                p.type === 'file' &&
+                p.mediaType.startsWith('image/')
               ) {
-                return typeof part.url === 'string' && keptImages.includes(part.url)
+                return keptImages.includes(p.url)
               }
               return true
-            }) as unknown[]),
+            }),
           ]
           return {
             ...msg,
