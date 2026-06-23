@@ -5,6 +5,32 @@ pub struct FileStat {
     pub size: u64,
 }
 
+/// One entry returned by the remote-attach file walker (`~` picker).
+///
+/// `path` is the absolute, canonicalized filesystem path that the frontend
+/// hands back to `readAttachFileBase64` when the user picks the entry. `name`
+/// is just the basename for display. `is_dir` is true for folders so the
+/// picker can render a folder icon (folders are listed but not selectable).
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachFileEntry {
+    pub name: String,
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// Bytes for a remotely-attached file, returned by `readAttachFileBase64`.
+/// `base64` carries the raw file content (so the browser can rebuild a
+/// `Blob`/`File` identical to an uploaded one); `size` is the original byte
+/// length, useful for size validation on the frontend.
+#[derive(serde::Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachFileBytes {
+    pub base64: String,
+    pub size: u64,
+}
+
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub struct DialogFilter {
     pub name: String,

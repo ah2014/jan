@@ -84,6 +84,14 @@ import {
 import JanBrowserExtensionDialog from '@/containers/dialogs/JanBrowserExtensionDialog'
 import { useJanBrowserExtension } from '@/hooks/useJanBrowserExtension'
 import { useAgentMode } from '@/hooks/useAgentMode'
+import { RemoteFilePicker } from '@/containers/RemoteFilePicker'
+import {
+  classifyRemoteFile,
+  mimeTypeFor,
+  shouldTriggerRemotePicker,
+  stripTrailingTilde,
+} from '@/lib/remoteAttach'
+import type { RemoteFileEntry } from '@/services/remote-files/types'
 
 type ChatInputProps = {
   className?: string
@@ -177,6 +185,9 @@ const ChatInput = memo(function ChatInput({
   >(false)
   const [isDragOver, setIsDragOver] = useState(false)
   const [hasMmproj, setHasMmproj] = useState(false)
+  // `~` picker: when open, the remote-attach file picker is shown above the
+  // composer. The user types `~` to summon it; Esc / click-outside dismisses.
+  const [remotePickerOpen, setRemotePickerOpen] = useState(false)
   const activeModels = useAppState(useShallow((state) => state.activeModels))
   // Check if selected model is currently loaded/active
   const isModelActive = selectedModel?.id ? activeModels.includes(selectedModel.id) : false
@@ -883,6 +894,15 @@ const ChatInput = memo(function ChatInput({
     )
   }
 
+  // Click-outside dismiss for the `~` picker. The picker stops propagation on
+  // its own mousedown, so any mousedown that reaches the document lands outside.
+  useEffect(() => {
+    if (!remotePickerOpen) return
+    const onDown = () => setRemotePickerOpen(false)
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [remotePickerOpen])
+
   const getFileTypeFromExtension = (fileName: string): string => {
     const extension = fileName.toLowerCase().split('.').pop()
     switch (extension) {
@@ -1537,10 +1557,146 @@ const ChatInput = memo(function ChatInput({
     // If hasMmproj is false or no images found, allow normal text pasting to continue
   }
 
+  /**
+   * Attach a server-side file chosen through the `~` remote-attach picker.
+   * Routes to the existing image/audio/document pipelines so the resulting
+   * attachment is indistinguishable from one the user uploaded by hand:
+   *
+   *   * images  → fetch bytes (base64 via `readAttachFileBase64`) → rebuild a
+   *     `File` → `processImageFiles` (same path as the image picker)
+   *   * audio   → same, through `processAudioFiles`
+   *   * everything else → path-based document attachment, exactly like
+   *     `handleAttachDocsIngest` but without the native file dialog (the
+   *     picker already gave us the path) — ingestion is deferred to send
+   *     time via `processNewDocumentAttachments`.
+   *
+   * The backend's `readAttachFileBase64` enforces that the path lives under a
+   * configured `allowed_attach_paths.json` root, so a buggy/hostile picker
+   * cannot read arbitrary files.
+   */
+  const handleAttachRemoteFile = useCallback(
+    async (entry: RemoteFileEntry) => {
+      if (entry.isDir) return
+      setRemotePickerOpen(false)
+      try {
+        const kind = classifyRemoteFile(entry.name)
+
+        if (kind === 'image' || kind === 'audio') {
+          const mimeType = mimeTypeFor(entry.name)
+          if (!mimeType) throw new Error(`Unsupported file type: ${entry.name}`)
+          // Fail fast on oversized files BEFORE reading bytes server-side.
+          // The downstream processImageFiles (10MB) / processAudioFiles (25MB)
+          // caps only fire after the file has been read, base64-encoded
+          // (~33% larger), shipped over IPC, and rebuilt into a Blob — a large
+          // remote image could OOM the tab/backend before that rejection.
+          // entry.size is already known at pick time, so mirror the downstream
+          // cap here to reject early.
+          const downstreamCapBytes =
+            kind === 'image' ? 10 * 1024 * 1024 : 25 * 1024 * 1024
+          if (
+            typeof entry.size === 'number' &&
+            entry.size > downstreamCapBytes
+          ) {
+            toast.error('File too large', {
+              description: `${entry.name} exceeds the ${kind === 'image' ? '10MB' : '25MB'} limit`,
+            })
+            return
+          }
+          // `readBytes` is gated to allowed_attach_paths.json roots server-side.
+          const { base64 } = await serviceHub
+            .remoteFiles()
+            .readBytes(entry.path)
+          // Rebuild a File so the existing image/audio pipelines are reused
+          // unchanged. `fetch` on a data: URL works in both Tauri and browsers.
+          const dataUrl = `data:${mimeType};base64,${base64}`
+          const blob = await (await fetch(dataUrl)).blob()
+          const file = new File([blob], entry.name, { type: mimeType })
+          if (kind === 'image') {
+            await processImageFiles([file])
+          } else {
+            await processAudioFiles([file])
+          }
+          return
+        }
+
+        // Document: build the attachment directly from the picker's entry —
+        // the picker already gave us the absolute path and size, so we skip
+        // the native dialog + fs.fileStat steps of handleAttachDocsIngest.
+        if (!attachmentsEnabled) {
+          toast.info('Attachments are disabled in Settings')
+          return
+        }
+        const fileType = entry.name.split('.').pop()?.toLowerCase()
+        const maxFileSizeBytes =
+          typeof maxFileSizeMB === 'number' && maxFileSizeMB > 0
+            ? maxFileSizeMB * 1024 * 1024
+            : undefined
+        if (
+          maxFileSizeBytes !== undefined &&
+          typeof entry.size === 'number' &&
+          entry.size > maxFileSizeBytes
+        ) {
+          toast.error('File too large', {
+            description: `${entry.name} exceeds the ${maxFileSizeMB}MB limit`,
+          })
+          return
+        }
+        const newAtt = createDocumentAttachment({
+          name: entry.name,
+          path: entry.path,
+          fileType,
+          size: entry.size,
+          parseMode: parsePreference,
+        })
+        let deduped: Attachment[] = []
+        setAttachmentsForThread(attachmentsKey, (currentAttachments) => {
+          const existingPaths = new Set(
+            currentAttachments
+              .filter((a) => a.type === 'document' && a.path)
+              .map((a) => a.path)
+          )
+          if (existingPaths.has(newAtt.path)) {
+            toast.warning('File already attached', {
+              description: `${newAtt.name} is already in the list`,
+            })
+            return currentAttachments
+          }
+          deduped = [newAtt]
+          return [...currentAttachments, newAtt]
+        })
+        if (deduped.length > 0) {
+          await processNewDocumentAttachments(deduped)
+        }
+      } catch (e) {
+        console.error('Failed to attach remote file:', e)
+        toast.error('Failed to attach file', {
+          description: e instanceof Error ? e.message : String(e),
+        })
+      }
+    },
+    [
+      attachmentsEnabled,
+      attachmentsKey,
+      maxFileSizeMB,
+      parsePreference,
+      processAudioFiles,
+      processImageFiles,
+      processNewDocumentAttachments,
+      serviceHub,
+      setAttachmentsForThread,
+    ]
+  )
+
   const isStreaming = chatStatus === 'submitted' || chatStatus === 'streaming'
 
   return (
     <div className="relative">
+      {remotePickerOpen && (
+        <RemoteFilePicker
+          onSelect={(entry) => void handleAttachRemoteFile(entry)}
+          onClose={() => setRemotePickerOpen(false)}
+        />
+      )}
       <div className="relative">
         <div
           className={cn(
@@ -1706,9 +1862,21 @@ const ChatInput = memo(function ChatInput({
               value={prompt}
               data-testid={'chat-input'}
               onChange={(e) => {
-                setPrompt(e.target.value)
+                const val = e.target.value
+                // `~` is the remote-attach picker trigger: when the user types
+                // one at the end of the prompt (and the picker isn't already
+                // open), strip it and open the picker. The picker takes focus
+                // so further keystrokes go to its search field. The exact
+                // trigger rule + stripping live in `lib/remoteAttach` so they
+                // can be unit-tested without mounting this heavyweight input.
+                if (shouldTriggerRemotePicker(val, remotePickerOpen)) {
+                  setPrompt(stripTrailingTilde(val))
+                  setRemotePickerOpen(true)
+                  return
+                }
+                setPrompt(val)
                 // Count the number of newlines to estimate rows
-                const newRows = (e.target.value.match(/\n/g) || []).length + 1
+                const newRows = (val.match(/\n/g) || []).length + 1
                 setRows(Math.min(newRows, maxRows))
               }}
               onKeyDown={(e) => {

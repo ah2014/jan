@@ -31,6 +31,8 @@ import { DefaultRAGService } from './rag/default'
 import type { RAGService } from './rag/types'
 import { DefaultUploadsService } from './uploads/default'
 import type { UploadsService } from './uploads/types'
+import { DefaultRemoteFilesService } from './remote-files/default'
+import type { RemoteFilesService } from './remote-files/types'
 
 // Import service types
 import type { ThemeService } from './theme/types'
@@ -76,6 +78,7 @@ export interface ServiceHub {
   projects(): ProjectsService
   rag(): RAGService
   uploads(): UploadsService
+  remoteFiles(): RemoteFilesService
 }
 
 class PlatformServiceHub implements ServiceHub {
@@ -100,6 +103,7 @@ class PlatformServiceHub implements ServiceHub {
   private projectsService: ProjectsService = new DefaultProjectsService()
   private ragService: RAGService = new DefaultRAGService()
   private uploadsService: UploadsService = new DefaultUploadsService()
+  private remoteFilesService: RemoteFilesService = new DefaultRemoteFilesService()
   private initialized = false
 
   /**
@@ -332,6 +336,11 @@ class PlatformServiceHub implements ServiceHub {
   uploads(): UploadsService {
     this.ensureInitialized()
     return this.uploadsService
+  }
+
+  remoteFiles(): RemoteFilesService {
+    this.ensureInitialized()
+    return this.remoteFilesService
   }
 }
 

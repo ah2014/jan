@@ -36,6 +36,13 @@ export const AppRoutes = [
   // provider's key/base_url, so the web UI (which never holds the key) can
   // persist model settings into the shared `providers.json`.
   'setProviderModelCapabilities',
+  // Remote-attach picker (`~` in the composer): browse/attach files living on
+  // the backend host without uploading. Allow-list of root folders lives in
+  // <jan_data_folder>/allowed_attach_paths.json (hand-edited; no UI).
+  // Handled by Tauri command on desktop and by /api/invoke on web.
+  'listAllowedAttachPaths',
+  'walkAllowedAttachPaths',
+  'readAttachFileBase64',
 ]
 // Define API routes based on different route types
 export const Routes = [...CoreRoutes, ...APIRoutes, ...AppRoutes].map((r) => ({

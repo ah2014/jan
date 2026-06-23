@@ -65,6 +65,72 @@ yarn build:webui       # cross-env IS_WEB_APP=true vite build
 
 See `CONTRIBUTING.md` for the full test matrix (`make test`).
 
+### Known pre-existing web test failures (do NOT investigate these)
+
+`yarn test:web` has a stable set of failures on the clean `HEAD` tree that are
+**environmental, not caused by your changes**. They were verified pre-existing
+by stashing the changes and re-running — the failing set was identical. Do not
+waste time stash-and-retesting to "confirm"; diff your failure list against
+this instead.
+
+**Baseline on clean tree (Node 26.3.0, vitest 3.2.4):**
+```
+Test Files  17 failed | 190 passed (207)
+Tests       147 failed | 2438 passed (2585)
+```
+If your totals match (or your new failures are a strict subset after excluding
+new tests you added), your changes are clean. The web-app Rust build, lint,
+and typecheck gates are unaffected and have **zero** pre-existing failures.
+
+**Root causes (all 3 are test-setup issues, not product bugs):**
+
+1. **`localStorage` is `undefined` in the jsdom env (15 files, ~140 tests).**
+   These test files call `localStorage.clear()` / `setItem` / `getItem` in a
+   `beforeEach` or the test body, but `web-app/src/test/setup.ts` does not
+   install a `localStorage` polyfill and the configured jsdom version does not
+   expose it as a working global. Symptom:
+   `TypeError: Cannot read properties of undefined (reading 'clear'|'setItem'|'getItem')`.
+   A real fix would be to add a `localStorage` stub to `src/test/setup.ts`, but
+   that is out of scope for most tasks.
+
+2. **`src/utils/__tests__/formatDate.test.ts`** — a timezone/locale-dependent
+   date assertion: `expected 'Dec 31, 1899, 7:00 PM' to match /Jan.*1.*1900/i`.
+   Fails on non-UTC machines; passes in CI's UTC env.
+
+3. **`src/services/models/__tests__/default.test.ts`** — a `localStorage`
+   fallback assertion that goes down the wrong branch because of cause #1.
+
+**Affected files (all 17):**
+```
+web-app/src/containers/__tests__/SetupScreen.test.tsx
+web-app/src/hooks/__tests__/useAgentMode.test.ts
+web-app/src/hooks/__tests__/useAssistant.coverage.test.ts
+web-app/src/hooks/__tests__/useClaudeCodeModel.test.ts
+web-app/src/hooks/__tests__/useDownloadStore.test.ts
+web-app/src/hooks/__tests__/useLocalApiServer.coverage.test.ts
+web-app/src/hooks/__tests__/useModelProvider.coverage.test.ts
+web-app/src/hooks/__tests__/useModelProvider.test.ts
+web-app/src/hooks/__tests__/useThreads.test.ts
+web-app/src/hooks/__tests__/useToolAvailable.coverage.test.ts
+web-app/src/services/models/__tests__/default.test.ts
+web-app/src/services/projects/__tests__/default.coverage.test.ts
+web-app/src/services/projects/__tests__/default.test.ts
+web-app/src/services/__tests__/index.coverage.test.ts
+web-app/src/services/window/__tests__/tauri.test.ts
+web-app/src/utils/__tests__/formatDate.test.ts
+web-app/src/utils/__tests__/getModelToStart.test.ts
+```
+
+**Fast path to verify *your* change:** run only the test file(s) covering your
+edited code, e.g.:
+```bash
+NODE_OPTIONS=--max-old-space-size=4096 yarn exec vitest run \
+  --project @janhq/web-app \
+  src/hooks/__tests__/useRemoteFiles.test.ts src/containers/__tests__/ChatInput.test.tsx
+```
+(node: `--cwd` is not a valid vitest flag here — the monorepo uses the root
+vitest with `--project @janhq/web-app` and positional path filters.)
+
 ## Web interface (phone access)
 
 The desktop app can additionally serve a web UI over the LAN. Configure it in

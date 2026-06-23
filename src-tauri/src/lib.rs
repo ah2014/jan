@@ -39,6 +39,13 @@ macro_rules! invoke_commands_with_extras {
         core::filesystem::commands::decompress,
         core::filesystem::commands::open_dialog,
         core::filesystem::commands::save_dialog,
+        // Remote-attach picker (`~` in the composer) — browse/attach files
+        // living on the backend host without uploading them. Allow-list of
+        // root folders is configured via allowed_attach_paths.json in the
+        // jan_data_folder; see core::server::attach_paths_store.
+        core::filesystem::attach_path_commands::list_allowed_attach_paths,
+        core::filesystem::attach_path_commands::walk_allowed_attach_paths,
+        core::filesystem::attach_path_commands::read_attach_file_base64,
         // App configuration commands
         core::app::commands::get_app_configurations,
         core::app::commands::get_user_home_path,

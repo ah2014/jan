@@ -35,6 +35,9 @@ use crate::core::filesystem::commands::{
     exists_sync, file_stat, join_path, mkdir, read_file_sync, readdir_sync, rm,
     write_file_sync,
 };
+use crate::core::filesystem::attach_path_commands::{
+    list_allowed_attach_paths, read_attach_file_base64, walk_allowed_attach_paths,
+};
 use crate::core::server::remote_provider_commands::{
     remove_provider_config, upsert_provider_config, upsert_provider_model_capabilities,
     RegisterProviderRequest,
@@ -532,6 +535,26 @@ async fn dispatch(
         "joinPath" => {
             let parts = fs_args(args)?;
             Ok(json!(join_path(app_handle.clone(), parts)?))
+        }
+
+        // -- Remote-attach picker (`~` in the composer) --
+        // Mirrors the Tauri commands of the same name (camelCase here;
+        // lib/service.ts rewrites camelCase -> snake_case for the desktop
+        // invoke path). The allow-list lives in
+        // <jan_data_folder>/allowed_attach_paths.json.
+        "listAllowedAttachPaths" => Ok(json!(list_allowed_attach_paths(app_handle.clone())?)),
+        "walkAllowedAttachPaths" => {
+            Ok(json!(walk_allowed_attach_paths(app_handle.clone())?))
+        }
+        "readAttachFileBase64" => {
+            // `RemoteFilesService.readBytes` passes `{ path }` directly. The
+            // `args` fallback accepts a bare-string `args` value (NOT the fs
+            // module's `{ args: [path] }` array form, which `arg_str`
+            // rejects — that is handled by `fs_args` on the fs routes above).
+            // Kept for callers that may still send the legacy `{ args: path }`
+            // spelling, as `fileStat` does.
+            let p = arg_str(args, &["path", "args"])?;
+            Ok(json!(read_attach_file_base64(app_handle.clone(), p)?))
         }
 
         // -- App config --

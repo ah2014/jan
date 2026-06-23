@@ -1,4 +1,5 @@
 import { useLeftPanel } from '@/hooks/useLeftPanel'
+import { useSidebar } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 import {
   IconLayoutSidebar,
@@ -11,7 +12,12 @@ type HeaderPageProps = {
   children?: ReactNode
 }
 const HeaderPage = memo(function HeaderPage({ children }: HeaderPageProps) {
-  const { open, setLeftPanel } = useLeftPanel()
+  const { open } = useLeftPanel()
+  // The mobile drawer is controlled by a separate `openMobile` state inside
+  // SidebarProvider, reachable only via `toggleSidebar`. The desktop `open`
+  // state is unrelated on mobile, so we always surface a trigger button on
+  // mobile and dispatch through `toggleSidebar` (which branches on isMobile).
+  const { isMobile, toggleSidebar } = useSidebar()
 
   return (
     <div
@@ -26,14 +32,14 @@ const HeaderPage = memo(function HeaderPage({ children }: HeaderPageProps) {
           'flex items-center w-full gap-1',
         )}
       >
-        {!open && (
+        {(!open || isMobile) && (
           <>
             <DownloadManagement />
             <Button
               variant="ghost"
               size="icon-sm"
               className='rounded-full relative z-50'
-              onClick={() => setLeftPanel(!open)}
+              onClick={() => toggleSidebar()}
               aria-label="Toggle sidebar"
             >
               <IconLayoutSidebar

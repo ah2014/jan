@@ -1,3 +1,4 @@
+pub mod attach_paths_store;
 pub mod commands;
 pub mod proxy;
 pub mod provider_store;
