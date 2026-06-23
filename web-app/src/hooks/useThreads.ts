@@ -14,6 +14,7 @@ type ThreadState = {
   currentThreadId?: string
   getCurrentThread: () => Thread | undefined
   setThreads: (threads: Thread[]) => void
+  refreshThreads: () => Promise<void>
   getFavoriteThreads: () => Thread[]
   getThreadById: (threadId: string) => Thread | undefined
   toggleFavorite: (threadId: string) => void
@@ -96,6 +97,10 @@ export const useThreads = create<ThreadState>()((set, get) => ({
         selector: (item: Thread) => item.title ?? '',
       }),
     })
+  },
+  refreshThreads: async () => {
+    const threads = await getServiceHub().threads().fetchThreads()
+    get().setThreads(threads)
   },
   getFilteredThreads: (searchTerm: string) => {
     const { threads, searchIndex } = get()
