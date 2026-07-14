@@ -357,6 +357,30 @@ describe('RenderMarkdown', () => {
     })
   })
 
+  describe('LaTeX normalization - streaming mode', () => {
+    it('converts \\(...\\) to inline math while streaming', () => {
+      const content = 'The formula \\(E = mc^2\\) is famous'
+      render(<RenderMarkdown content={content} isStreaming={true} />)
+      const katexContainer = document.querySelector('.katex')
+      expect(katexContainer).toBeTruthy()
+    })
+
+    it('converts \\[...\\] to display math while streaming', () => {
+      const content = 'Here is math:\n\\[\nx^2 + y^2\n\\]\nDone'
+      render(<RenderMarkdown content={content} isStreaming={true} />)
+      const katexContainer = document.querySelector('.katex')
+      expect(katexContainer).toBeTruthy()
+    })
+
+    it('escapes $<number> while streaming so it is not parsed as math', () => {
+      const content = 'The price is $200 for the item'
+      render(<RenderMarkdown content={content} isStreaming={true} />)
+      const markdownContainer = document.querySelector('.markdown')
+      const text = markdownContainer?.textContent || ''
+      expect(text).toContain('$200')
+    })
+  })
+
   describe('LaTeX normalization - HTML tag recognition', () => {
     it('does not treat invalid ("<",">") pairs as HTML tag', () => {
       const content = '$1 < $2, So choose the $1 one.\n\n> quoted content'

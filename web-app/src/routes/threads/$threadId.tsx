@@ -13,7 +13,7 @@ import { useMessageErrors } from '@/stores/message-errors'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { useTools } from '@/hooks/useTools'
 import { useAppState } from '@/hooks/useAppState'
-import { SESSION_STORAGE_PREFIX } from '@/constants/chat'
+import { SESSION_STORAGE_PREFIX, TEMPORARY_CHAT_ID } from '@/constants/chat'
 import { useChat } from '@/hooks/use-chat'
 import { useModelProvider } from '@/hooks/useModelProvider'
 import { renderInstructions } from '@/lib/instructionTemplate'
@@ -66,6 +66,12 @@ const CHAT_STATUS = {
 } as const
 
 const TITLE_REFRESH_EVERY_N_ASSISTANT_MESSAGES = 4
+
+// Surfaced for assistant messages persisted mid-stream by the streaming
+// checkpoint (i.e. generation was interrupted by a crash/close). Used to
+// hydrate the per-message error store so the banner + Regenerate affordance
+// appear on reload.
+const STREAM_INTERRUPTED = 'Response was interrupted'
 
 // Persist the out-of-context error onto the latest user message so the banner
 // survives thread switches, mirroring how LlamacppOomListener stamps oom/backend.
@@ -293,6 +299,11 @@ function ThreadDetail() {
         } else {
           addMessage(assistantMessage)
         }
+        // Mark this assistant turn as finalized so the streaming-checkpoint
+        // interval stops rewriting it. `status` stays 'streaming' through tool
+        // execution, so without this guard the 2s interval would re-stamp
+        // `streaming_checkpoint: true` onto the already-finished message.
+        finalizedAssistantIdRef.current = message.id
 
         for (const m of existingMessages) {
           const meta = m.metadata as Record<string, unknown> | undefined
@@ -611,10 +622,17 @@ function ThreadDetail() {
 
           const hydrated: Record<string, string> = {}
           for (const m of messagesToSet) {
-            const err = (m.metadata as Record<string, unknown> | undefined)
-              ?.error
+            const meta = (m.metadata as Record<string, unknown> | undefined)
+            const err = meta?.error
             if (typeof err === 'string' && err.length > 0) {
               hydrated[m.id] = err
+            } else if (meta?.streaming_checkpoint === true) {
+              // Partial assistant turn recovered from a checkpoint: the
+              // generation never reached onFinish. Surface it as interrupted
+              // so the banner + Regenerate affordance render. The error-store
+              // -> metadata persistence effect back-fills `metadata.error`,
+              // making the state self-healing on later loads.
+              hydrated[m.id] = STREAM_INTERRUPTED
             }
           }
           useMessageErrors.getState().hydrate(hydrated)
@@ -1305,6 +1323,85 @@ function ThreadDetail() {
       })
     }
   }, [localThreadMessages, errorEntries, updateMessage])
+
+  // --- Streaming checkpoint --------------------------------------------------
+  // The assistant message is otherwise only persisted in onFinish, so closing
+  // the window mid-generation loses the entire response. Periodically write the
+  // in-flight content to the backend so at most CHECKPOINT_INTERVAL ms of tokens
+  // are lost on crash/close. The persisted partial is tagged with
+  // `streaming_checkpoint: true`; on reload it is surfaced as an interrupted
+  // turn (see the hydration logic below). `onFinish` remains the authoritative
+  // final write: it clears the checkpoint flag AND sets `finalizedAssistantIdRef`,
+  // which makes `flush` a no-op for that message until a new turn begins.
+  const inflightAssistantRef = useRef<UIMessage | null>(null)
+  const finalizedAssistantIdRef = useRef<string | null>(null)
+  useEffect(() => {
+    if (
+      status !== CHAT_STATUS.STREAMING &&
+      status !== CHAT_STATUS.SUBMITTED
+    ) {
+      inflightAssistantRef.current = null
+      return
+    }
+    for (let i = chatMessages.length - 1; i >= 0; i--) {
+      if (chatMessages[i].role === 'assistant') {
+        const prev = inflightAssistantRef.current
+        inflightAssistantRef.current = chatMessages[i]
+        // A new assistant turn has started: clear the finalized marker left by
+        // the previous turn's onFinish so checkpointing resumes.
+        if (prev?.id !== chatMessages[i].id) {
+          finalizedAssistantIdRef.current = null
+        }
+        return
+      }
+    }
+    inflightAssistantRef.current = null
+  }, [chatMessages, status])
+
+  useEffect(() => {
+    if (threadId === TEMPORARY_CHAT_ID) return
+    if (status !== CHAT_STATUS.STREAMING) return
+
+    const flush = () => {
+      const inflight = inflightAssistantRef.current
+      if (!inflight || !uiMessageHasMeaningfulContent(inflight)) return
+      // Skip once onFinish has persisted the final version of this message;
+      // status can still be 'streaming' (tool calls) at that point.
+      if (inflight.id === finalizedAssistantIdRef.current) return
+      const contentParts = extractContentPartsFromUIMessage(inflight)
+      if (!contentParts.length) return
+      const existing = useMessages
+        .getState()
+        .getMessages(threadId)
+        .find((m) => m.id === inflight.id)
+      // Merge over the persisted metadata so fields written only to the store
+      // (e.g. `metadata.error` stamped by the error effects above) are not
+      // clobbered by the in-memory message's metadata.
+      const persistedMeta =
+        (existing?.metadata as Record<string, unknown> | undefined) ?? {}
+      const partial: ThreadMessage = {
+        type: 'text',
+        role: ChatCompletionRole.Assistant,
+        content: contentParts,
+        id: inflight.id,
+        object: 'thread.message',
+        thread_id: threadId,
+        status: MessageStatus.Ready,
+        created_at: Date.now(),
+        completed_at: Date.now(),
+        metadata: {
+          ...persistedMeta,
+          ...((inflight.metadata as Record<string, unknown>) ?? {}),
+          streaming_checkpoint: true,
+        },
+      }
+      if (existing) updateMessage(partial)
+      else addMessage(partial)
+    }
+
+    const interval = setInterval(flush, 2000)
+    return () => clearInterval(interval)
+  }, [status, threadId, addMessage, updateMessage])
 
   // Clear the queue when navigating away from this thread
   useEffect(() => {

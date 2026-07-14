@@ -30,6 +30,35 @@ interface MarkdownProps {
 const latexCache = new Map<string, string>()
 
 /**
+ * Apply the math-delimiter transforms directly to a string:
+ *  - escape `$<number>` so "$5" isn't parsed as inline math
+ *  - convert `\[...\]` (display) and `\(...\)` (inline) to `$$...$$` / `$...$`
+ * No code-block / HTML protection here — callers must guard those themselves
+ * (the full `normalizeLatex` does so via its split).
+ */
+const normalizeMathDelimiters = (s: string): string => {
+  // --- Escape suspicious $<number> to prevent Markdown from treating it as LaTeX
+  // Example: "$1" → "\$1"
+  s = s.replace(/\$(\d+)(?![^\n]*\$([^\d]|$))/g, (_, num) => '\\$' + num)
+
+  // --- Display math: \[...\] surrounded by newlines
+  if (s.includes('\\['))
+    s = s.replace(
+      /(^|\n)\\\[\s*\n([\s\S]*?)\n\s*\\\](?=\n|$)/g,
+      (_, pre, inner) => `${pre}$$\n${inner.trim()}\n$$`
+    )
+
+  // --- Inline math: \( ... \)
+  if (s.includes('\\('))
+    s = s.replace(
+      /(^|[^$\\])\\\((.+?)\\\)(?=[^$\\]|$)/g,
+      (_, pre, inner) => `${pre}$${inner.trim()}$`
+    )
+
+  return s
+}
+
+/**
  * Optimized preprocessor: normalize LaTeX fragments into $ / $$.
  * Uses caching to avoid reprocessing the same content.
  */
@@ -47,33 +76,13 @@ const normalizeLatex = (input: string): string => {
     const segment = segments[i];
     if (!segment) continue;
 
-    // Captured code blocks, inline code, html tags
+    // Captured code blocks, inline code, html tags — leave untouched
     if (i % 2 === 1) {
       result += segment;
       continue;
     }
 
-    let s = segment;
-
-    // --- Escape suspicious $<number> to prevent Markdown from treating it as LaTeX
-    // Example: "$1" → "\$1"
-    s = s.replace(/\$(\d+)(?![^\n]*\$([^\d]|$))/g, (_, num) => '\\$' + num)
-
-    // --- Display math: \[...\] surrounded by newlines
-    if (s.includes('\\['))
-      s = s.replace(
-        /(^|\n)\\\[\s*\n([\s\S]*?)\n\s*\\\](?=\n|$)/g,
-        (_, pre, inner) => `${pre}$$\n${inner.trim()}\n$$`
-      )
-
-    // --- Inline math: space \( ... \)
-    if (s.includes('\\('))
-      s = s.replace(
-        /(^|[^$\\])\\\((.+?)\\\)(?=[^$\\]|$)/g,
-        (_, pre, inner) => `${pre}$${inner.trim()}$`
-      )
-
-    result += s;
+    result += normalizeMathDelimiters(segment);
   }
 
   // Cache the result (with size limit to prevent memory leaks)
@@ -96,8 +105,19 @@ function RenderMarkdownComponent({
   isStreaming,
 }: MarkdownProps) {
 
-  // Memoize the normalized content to avoid reprocessing on every render
-  const normalizedContent = useMemo(() => normalizeLatex(content), [content])
+  // Full `normalizeLatex` runs a string split + per-segment passes and caches
+  // by the whole string. During streaming the content changes on every throttled
+  // batch, so the cache never hits and that full pass is a major cause of UI
+  // freezes on long answers. Instead run only the cheap delimiter transforms
+  // (no split, no caching): it fixes the streaming regressions where `\(...\)`
+  // renders as literal text and `$5` gets parsed as math, while keeping each
+  // batch O(n) with a small constant. The final (non-streaming) render re-runs
+  // the full protective normalizeLatex, which also restores code-block safety.
+  const normalizedContent = useMemo(
+    () =>
+      isStreaming ? normalizeMathDelimiters(content) : normalizeLatex(content),
+    [content, isStreaming]
+  )
 
   const mergedComponents = useMemo<Components>(() => {
     const Anchor = (

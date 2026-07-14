@@ -22,6 +22,10 @@ const h = vi.hoisted(() => {
     error: null,
   }
 
+  // Route param (threadId). Overridable per-test for cases like the temporary
+  // thread. Reset to the default in beforeEach.
+  let routeThreadId = 'thread-1'
+
   const threadsState: any = {
     threads: {
       'thread-1': {
@@ -165,7 +169,7 @@ const h = vi.hoisted(() => {
 
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (config: any) => ({ ...config, id: '/threads/$threadId' }),
-  useParams: () => ({ threadId: 'thread-1' }),
+  useParams: () => ({ threadId: h.routeThreadId }),
   useSearch: () => ({ threadModel: undefined }),
 }))
 
@@ -284,6 +288,10 @@ vi.mock('@/lib/messages', () => ({
     msg.parts
       .filter((p: any) => p.type === 'text')
       .map((p: any) => ({ type: 'text', text: { value: p.text, annotations: [] } })),
+  uiMessageHasMeaningfulContent: (msg: any) =>
+    !!msg.parts?.some(
+      (p: any) => p.type === 'text' && typeof p.text === 'string' && !!p.text.trim()
+    ),
 }))
 
 vi.mock('@/lib/completion', () => ({
@@ -371,6 +379,7 @@ vi.mock('@janhq/core', () => ({
 
 vi.mock('@/constants/chat', () => ({
   SESSION_STORAGE_PREFIX: { INITIAL_MESSAGE: 'initial-message-' },
+  TEMPORARY_CHAT_ID: 'temporary-chat',
 }))
 
 vi.mock('@/utils/error', () => ({
@@ -391,6 +400,7 @@ describe('ThreadDetail route', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     h.chatState.messages = []
+    h.routeThreadId = 'thread-1'
     h.chatState.status = 'ready'
     h.chatState.error = null
     h.threadsState.threads['thread-1'] = {
@@ -521,6 +531,72 @@ describe('ThreadDetail route', () => {
     screen.getByTestId('edit-a1').click()
     expect(h.messagesState.updateMessage).toHaveBeenCalled()
     expect(h.mockRegenerate).not.toHaveBeenCalled()
+  })
+
+  it('streaming checkpoint merges persisted metadata (preserves error)', () => {
+    vi.useFakeTimers()
+    try {
+      h.chatState.status = 'streaming'
+      h.chatState.messages = [
+        { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },
+        {
+          id: 'a1',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'partial' }],
+          metadata: { finishReason: 'stop' },
+        },
+      ]
+      // Persisted copy carries an error stamped by the error effect, which is
+      // NOT present on the in-memory message. The checkpoint must not drop it.
+      h.messagesState.getMessages = vi.fn(() => [
+        { id: 'a1', role: 'assistant', metadata: { error: 'boom' } },
+      ])
+      h.messagesState.updateMessage = vi.fn()
+      h.messagesState.addMessage = vi.fn()
+
+      renderComponent()
+      act(() => {
+        vi.advanceTimersByTime(2000)
+      })
+
+      expect(h.messagesState.updateMessage).toHaveBeenCalledTimes(1)
+      const partial = h.messagesState.updateMessage.mock.calls[0][0]
+      // Persisted error survives the merge...
+      expect(partial.metadata.error).toBe('boom')
+      // ...in-memory metadata is merged in...
+      expect(partial.metadata.finishReason).toBe('stop')
+      // ...and the checkpoint flag is stamped.
+      expect(partial.metadata.streaming_checkpoint).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('streaming checkpoint does not run for the temporary thread', () => {
+    vi.useFakeTimers()
+    try {
+      h.routeThreadId = 'temporary-chat'
+      h.chatState.status = 'streaming'
+      h.chatState.messages = [
+        {
+          id: 'a1',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'partial' }],
+        },
+      ]
+      h.messagesState.updateMessage = vi.fn()
+      h.messagesState.addMessage = vi.fn()
+
+      renderComponent()
+      act(() => {
+        vi.advanceTimersByTime(2000)
+      })
+
+      expect(h.messagesState.updateMessage).not.toHaveBeenCalled()
+      expect(h.messagesState.addMessage).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('edit preserves kept image attachments in the updated message content', () => {
