@@ -1,7 +1,10 @@
 import { useModelProvider } from '@/hooks/useModelProvider'
 
 import { useAppUpdater } from '@/hooks/useAppUpdater'
-import { useGeneralSetting } from '@/hooks/useGeneralSetting'
+import {
+  useGeneralSetting,
+  HUGGINGFACE_TOKEN_SECRET_KEY,
+} from '@/hooks/useGeneralSetting'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { useEffect } from 'react'
 import { useMCPServers, DEFAULT_MCP_SETTINGS } from '@/hooks/useMCPServers'
@@ -9,6 +12,7 @@ import { useAssistant } from '@/hooks/useAssistant'
 import { useNavigate } from '@tanstack/react-router'
 import { route } from '@/constants/routes'
 import { useThreads } from '@/hooks/useThreads'
+import { ExtensionManager } from '@/lib/extension'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
 import { useAppState } from '@/hooks/useAppState'
 import { AppEvent, events } from '@janhq/core'
@@ -55,9 +59,58 @@ async function registerRemoteProvider(provider: ModelProvider) {
 
   try {
     await invoke('register_provider_config', { request })
-    console.log(`Registered remote provider: ${provider.provider}`)
+    console.debug(`Registered remote provider: ${provider.provider}`)
   } catch (error) {
     console.error(`Failed to register provider ${provider.provider}:`, error)
+  }
+}
+
+// Re-seed in-memory provider keys from the OS keyring. Keys are no longer
+// persisted to settings storage (stripped by useModelProvider.partialize), so
+// after a reload the store has none; synchronous consumers (model-factory,
+// presence checks) read provider.api_key, so we repopulate the runtime objects.
+async function seedProviderKeysFromKeyring(
+  providers: ModelProvider[]
+): Promise<ModelProvider[]> {
+  return Promise.all(
+    providers.map(async (provider) => {
+      if (provider.provider === 'llamacpp') return provider
+      try {
+        const keys = await invoke<string[]>('get_provider_keys', {
+          provider: provider.provider,
+        })
+        if (!keys || keys.length === 0) return provider
+        return {
+          ...provider,
+          api_key: keys[0],
+          api_key_fallbacks: keys.slice(1),
+        }
+      } catch (error) {
+        console.warn(
+          `Failed to load keyring keys for ${provider.provider}:`,
+          error
+        )
+        return provider
+      }
+    })
+  )
+}
+
+// Re-seed keyring keys into the store for EVERY provider, including
+// user-added custom ones (getProviders() only returns predefined + engine
+// providers, so custom providers would otherwise stay keyless after a reload).
+// Applies via updateProvider so it merges over the already-hydrated state.
+async function applyKeyringKeys(): Promise<void> {
+  const store = useModelProvider.getState()
+  const seeded = await seedProviderKeysFromKeyring(store.providers)
+  for (const p of seeded) {
+    const current = store.providers.find((x) => x.provider === p.provider)
+    if (p.api_key && p.api_key !== current?.api_key) {
+      store.updateProvider(p.provider, {
+        api_key: p.api_key,
+        api_key_fallbacks: p.api_key_fallbacks,
+      })
+    }
   }
 }
 
@@ -88,6 +141,39 @@ const syncRemoteProviders = () => {
   }
 
   registeredProviderNames = currentActive
+}
+
+// MLX honors only these samplers; map Jan's setting keys to MLX request-body
+// keys (note repeat_penalty → repetition_penalty). llamacpp uses the router
+// preset and remote providers are intentionally excluded.
+const MLX_SAMPLING_KEY_MAP: Record<string, string> = {
+  temperature: 'temperature',
+  top_p: 'top_p',
+  repeat_penalty: 'repetition_penalty',
+}
+
+// Push per-model MLX sampling defaults to the API server so external clients
+// that omit these params inherit the GUI-configured values (overridable
+// per-request). Replaces the whole map, so an empty push clears stale entries.
+const syncModelParamDefaults = () => {
+  const providers = useModelProvider.getState().providers
+  const defaults: Record<string, Record<string, number>> = {}
+
+  for (const provider of providers) {
+    if (provider.provider !== 'mlx' || !provider.active) continue
+    for (const model of provider.models) {
+      const out: Record<string, number> = {}
+      for (const [janKey, mlxKey] of Object.entries(MLX_SAMPLING_KEY_MAP)) {
+        const v = model.settings?.[janKey]?.controller_props?.value
+        if (typeof v === 'number' && Number.isFinite(v)) out[mlxKey] = v
+      }
+      if (Object.keys(out).length > 0) defaults[model.id] = out
+    }
+  }
+
+  invoke('set_model_param_defaults', { defaults }).catch((e) =>
+    console.error('Failed to sync model param defaults:', e)
+  )
 }
 
 export function DataProvider() {
@@ -122,16 +208,27 @@ export function DataProvider() {
 
   useEffect(() => {
     console.log('Initializing DataProvider...')
-    serviceHub.providers().getProviders().then((providers) => {
-      setProviders(providers)
-      // Register active remote providers with the backend
-      providers.forEach((provider) => {
+    serviceHub.providers().getProviders().then(async (fetched) => {
+      setProviders(fetched)
+      // Seed keyring keys into the merged store (predefined + engine + custom).
+      await applyKeyringKeys()
+      // Register active remote providers with the backend, keys now in place.
+      useModelProvider.getState().providers.forEach((provider) => {
         if (provider.active) {
           registerRemoteProvider(provider)
           registeredProviderNames.add(provider.provider)
         }
       })
     })
+    // Re-seed the Hugging Face token from the keyring (no longer persisted to
+    // settings storage) into the store + download extension for this session.
+    invoke<string | null>('get_secret', {
+      key: HUGGINGFACE_TOKEN_SECRET_KEY,
+    })
+      .then((token) => {
+        if (token) useGeneralSetting.getState().setHuggingfaceToken(token)
+      })
+      .catch(() => {})
     serviceHub
       .mcp()
       .getMCPConfig()
@@ -154,7 +251,14 @@ export function DataProvider() {
         console.warn('Failed to load assistants, keeping default:', error)
       })
     serviceHub.deeplink().getCurrent().then(handleDeepLink)
-    serviceHub.deeplink().onOpenUrl(handleDeepLink)
+
+    let unsubscribeOpenUrl = () => {}
+    serviceHub
+      .deeplink()
+      .onOpenUrl(handleDeepLink)
+      .then((unsub) => {
+        unsubscribeOpenUrl = unsub
+      })
 
     // Listen for deep link events
     let unsubscribe = () => {}
@@ -168,24 +272,66 @@ export function DataProvider() {
         unsubscribe = unsub
       })
     return () => {
+      unsubscribeOpenUrl()
       unsubscribe()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serviceHub])
 
   useEffect(() => {
-    serviceHub
-      .threads()
-      .fetchThreads()
-      .then((threads) => {
-        setThreads(threads)
-      })
+    // fetchThreads throws while the Conversational extension is still loading
+    // (startup race, e.g. reload mid-stream). Retry with backoff instead of
+    // letting a single failed fetch leave the thread list permanently empty.
+    let cancelled = false
+    let attempt = 0
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const load = () => {
+      serviceHub
+        .threads()
+        .fetchThreads()
+        .then((threads) => {
+          if (cancelled) return
+          // Never overwrite a populated list with an empty fetch result: an
+          // empty array here is more likely a transient not-ready state than
+          // the user having zero threads.
+          if (
+            threads.length === 0 &&
+            Object.keys(useThreads.getState().threads).length > 0
+          ) {
+            return
+          }
+          setThreads(threads)
+        })
+        .catch(() => {
+          if (cancelled || attempt >= 20) return
+          attempt += 1
+          timer = setTimeout(load, Math.min(1000, 150 * attempt))
+        })
+    }
+    // A late (or re-)registration re-arms the fetch even after the bounded
+    // retries above are exhausted, e.g. when extension setup itself failed
+    // and only recovers later.
+    const unsubscribe = ExtensionManager.getInstance().onRegistrationChange(
+      () => {
+        if (cancelled) return
+        attempt = 0
+        clearTimeout(timer)
+        load()
+      }
+    )
+    load()
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      unsubscribe()
+    }
   }, [serviceHub, setThreads])
 
   // Sync remote providers with backend when providers change
   const providers = useModelProvider((s) => s.providers)
   useEffect(() => {
     syncRemoteProviders()
+    syncModelParamDefaults()
   }, [providers])
 
   // Check for app updates - initial check and periodic interval
@@ -220,12 +366,18 @@ export function DataProvider() {
   }, [checkForUpdate, autoUpdateCheck])
 
   useEffect(() => {
-    events.on(AppEvent.onModelImported, () => {
-      serviceHub.providers().getProviders().then((providers) => {
-        setProviders(providers)
+    const handler = () => {
+      serviceHub.providers().getProviders().then(async (fetched) => {
+        setProviders(fetched)
+        await applyKeyringKeys()
         syncRemoteProviders()
+        syncModelParamDefaults()
       })
-    })
+    }
+    events.on(AppEvent.onModelImported, handler)
+    return () => {
+      events.off(AppEvent.onModelImported, handler)
+    }
   }, [serviceHub, setProviders])
 
   // Auto-start Local API Server on app startup if enabled

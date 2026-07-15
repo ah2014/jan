@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import llamacpp_extension from '../index'
 
 import { normalizeLlamacppConfig } from '@janhq/tauri-plugin-llamacpp-api'
+import { getBackendSetting, setBackendSetting } from '../backend-settings'
+
+vi.mock('../backend-settings')
 
 // Mock fetch globally
 global.fetch = vi.fn()
@@ -13,6 +16,7 @@ vi.mock('../backend', () => ({
   downloadBackend: vi.fn(),
   listSupportedBackends: vi.fn(),
   getBackendDir: vi.fn(),
+  getLocalInstalledBackends: vi.fn(),
 }))
 
 // Mock tauri-plugin-llamacpp-api (partial mock)
@@ -427,11 +431,11 @@ describe('llamacpp_extension', () => {
 
   describe('migrateFitOff', () => {
     beforeEach(() => {
-      vi.mocked(localStorage.getItem).mockReturnValue(null)
+      vi.mocked(getBackendSetting).mockResolvedValue(null)
     })
 
     it('should skip migration if already migrated', async () => {
-      vi.mocked(localStorage.getItem).mockReturnValue('1')
+      vi.mocked(getBackendSetting).mockResolvedValue('1')
       extension['config'] = { fit: true } as any
       extension['getSettings'] = vi.fn()
 
@@ -449,7 +453,7 @@ describe('llamacpp_extension', () => {
 
       expect(extension['getSettings']).not.toHaveBeenCalled()
       expect(extension['updateSettings']).not.toHaveBeenCalled()
-      expect(localStorage.setItem).toHaveBeenCalledWith('llamacpp_fit_off_v1', '1')
+      expect(setBackendSetting).toHaveBeenCalledWith('llamacpp_fit_off_v1', '1')
     })
 
     it('should disable fit when it is true', async () => {
@@ -466,7 +470,7 @@ describe('llamacpp_extension', () => {
       expect(updatedSettings.find((s: any) => s.key === 'fit').controllerProps.value).toBe(false)
       expect(updatedSettings.find((s: any) => s.key === 'ctx_size').controllerProps.value).toBe(2048)
       expect(extension['config'].fit).toBe(false)
-      expect(localStorage.setItem).toHaveBeenCalledWith('llamacpp_fit_off_v1', '1')
+      expect(setBackendSetting).toHaveBeenCalledWith('llamacpp_fit_off_v1', '1')
     })
 
     it('should not modify other settings during fit migration', async () => {
@@ -670,6 +674,124 @@ describe('llamacpp_extension', () => {
           'linux-avx2-x64',
           'v2.0.0'
         )
+      })
+    })
+  })
+
+  describe('installCudaRuntime', () => {
+    it('should reject a path that does not exist', async () => {
+      const { fs } = await import('@janhq/core')
+      vi.mocked(fs.existsSync).mockResolvedValue(false)
+
+      await expect(
+        extension.installCudaRuntime('/tmp/cudart-llama-bin-win-cuda.zip')
+      ).rejects.toThrow('Invalid path or file')
+    })
+
+    it('should reject a file with an unsupported extension', async () => {
+      const { fs } = await import('@janhq/core')
+      vi.mocked(fs.existsSync).mockResolvedValue(true)
+
+      await expect(
+        extension.installCudaRuntime('/tmp/cudart-llama-bin-win-cuda.rar')
+      ).rejects.toThrow('Invalid path or file')
+    })
+
+    it('should reject an archive that is not a CUDA runtime archive', async () => {
+      const { fs } = await import('@janhq/core')
+      const { basename } = await import('@tauri-apps/api/path')
+      vi.mocked(fs.existsSync).mockResolvedValue(true)
+      vi.mocked(basename).mockResolvedValue('llama-b9193-bin-win-cuda.zip')
+
+      await expect(
+        extension.installCudaRuntime('/tmp/llama-b9193-bin-win-cuda.zip')
+      ).rejects.toThrow('Not a CUDA runtime archive')
+    })
+
+    it('should throw when no matching backend is installed', async () => {
+      const { fs } = await import('@janhq/core')
+      const { basename } = await import('@tauri-apps/api/path')
+      const backendModule = await import('../backend')
+      vi.mocked(fs.existsSync).mockResolvedValue(true)
+      vi.mocked(basename).mockResolvedValue('cudart-llama-bin-win-cuda-12.4.zip')
+      vi.mocked(backendModule.getLocalInstalledBackends).mockResolvedValue([
+        { backend: 'win-cpu-x64', version: 'v1.0.0' },
+      ])
+
+      await expect(
+        extension.installCudaRuntime('/tmp/cudart-llama-bin-win-cuda-12.4.zip')
+      ).rejects.toThrow('No installed "win-cuda-12.4" backend found')
+    })
+
+    it('should throw when matching backends lack a build/bin directory', async () => {
+      const { fs, joinPath } = await import('@janhq/core')
+      const { basename } = await import('@tauri-apps/api/path')
+      const { invoke } = await import('@tauri-apps/api/core')
+      const backendModule = await import('../backend')
+
+      vi.mocked(basename).mockResolvedValue('cudart-llama-bin-win-cuda-12.4.zip')
+      vi.mocked(backendModule.getLocalInstalledBackends).mockResolvedValue([
+        { backend: 'win-cuda-12.4', version: 'v1.0.0' },
+      ])
+      vi.mocked(backendModule.getBackendDir).mockResolvedValue(
+        '/path/to/jan/llamacpp/backends/v1.0.0/win-cuda-12.4'
+      )
+      vi.mocked(joinPath).mockImplementation((paths) =>
+        Promise.resolve(paths.join('/'))
+      )
+      // archive path exists, build/bin dir does not
+      vi.mocked(fs.existsSync)
+        .mockResolvedValueOnce(true)
+        .mockResolvedValue(false)
+
+      await expect(
+        extension.installCudaRuntime('/tmp/cudart-llama-bin-win-cuda-12.4.zip')
+      ).rejects.toThrow('none had a build/bin directory')
+      expect(invoke).not.toHaveBeenCalledWith('decompress', expect.anything())
+    })
+
+    it('should decompress into every matching backend build/bin', async () => {
+      const { fs, joinPath } = await import('@janhq/core')
+      const { basename } = await import('@tauri-apps/api/path')
+      const { invoke } = await import('@tauri-apps/api/core')
+      const backendModule = await import('../backend')
+
+      vi.mocked(basename).mockResolvedValue('cudart-llama-bin-win-cuda-12.4.zip')
+      vi.mocked(backendModule.getLocalInstalledBackends).mockResolvedValue([
+        { backend: 'win-cuda-12.4', version: 'v1.0.0' },
+        { backend: 'win-cuda-12.4', version: 'v2.0.0' },
+        { backend: 'win-cpu-x64', version: 'v1.0.0' },
+      ])
+      vi.mocked(backendModule.getBackendDir).mockImplementation(
+        (backend, version) =>
+          Promise.resolve(
+            `/path/to/jan/llamacpp/backends/${version}/${backend}`
+          )
+      )
+      vi.mocked(joinPath).mockImplementation((paths) =>
+        Promise.resolve(paths.join('/'))
+      )
+      vi.mocked(fs.existsSync).mockResolvedValue(true)
+      vi.mocked(invoke).mockResolvedValue(undefined)
+
+      await extension.installCudaRuntime(
+        '/tmp/cudart-llama-bin-win-cuda-12.4.zip'
+      )
+
+      // Only the two win-cuda-12.4 backends, not the cpu one.
+      const decompressCalls = vi
+        .mocked(invoke)
+        .mock.calls.filter(([cmd]) => cmd === 'decompress')
+      expect(decompressCalls).toHaveLength(2)
+      expect(invoke).toHaveBeenCalledWith('decompress', {
+        path: '/tmp/cudart-llama-bin-win-cuda-12.4.zip',
+        outputDir:
+          '/path/to/jan/llamacpp/backends/v1.0.0/win-cuda-12.4/build/bin',
+      })
+      expect(invoke).toHaveBeenCalledWith('decompress', {
+        path: '/tmp/cudart-llama-bin-win-cuda-12.4.zip',
+        outputDir:
+          '/path/to/jan/llamacpp/backends/v2.0.0/win-cuda-12.4/build/bin',
       })
     })
   })

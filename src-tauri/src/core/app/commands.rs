@@ -46,6 +46,11 @@ fn migrate_from_candidates(canonical: &Path, candidates: Vec<PathBuf>) -> std::i
                 canonical.display()
             );
             fs::copy(&legacy, canonical)?;
+            // Remove the stale copy in the bundle-id folder so the canonical
+            // product-name location is the single source of truth (#7898).
+            if let Err(err) = fs::remove_file(&legacy) {
+                log::warn!("Failed to remove legacy config {}: {err}", legacy.display());
+            }
             return Ok(());
         }
     }
@@ -112,6 +117,15 @@ pub fn resolve_config_file_path() -> PathBuf {
 /// Resolve the Jan data folder path without an AppHandle (for CLI use).
 /// Reads AppConfiguration from the config file; falls back to the default location.
 pub fn resolve_jan_data_folder() -> PathBuf {
+    // Explicit override wins on every platform. `dirs::data_dir()` reads
+    // XDG_DATA_HOME only on Linux, so tests/headless consumers need a portable
+    // way to redirect the data folder without relying on OS-specific env.
+    if let Ok(folder) = std::env::var("JAN_DATA_FOLDER") {
+        if !folder.is_empty() {
+            return PathBuf::from(folder);
+        }
+    }
+
     let config_file = resolve_config_file_path();
 
     if config_file.exists() {
@@ -329,7 +343,7 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn migration_copies_legacy_when_canonical_missing() {
+    fn migration_recovers_legacy_then_removes_stale_copy() {
         let tmp = tempdir().expect("temp dir");
         let canonical_dir = tmp.path().join("Jan");
         let canonical = canonical_dir.join(CONFIGURATION_FILE_NAME);
@@ -341,8 +355,14 @@ mod tests {
         migrate_from_candidates(&canonical, vec![legacy.clone()]).expect("migration succeeds");
 
         let recovered = fs::read_to_string(&canonical).expect("read canonical");
-        assert!(recovered.contains(r#""data_folder":"D:\\jan.ai""#));
-        assert!(legacy.exists(), "migration should be copy-only");
+        assert!(
+            recovered.contains(r#""data_folder":"D:\\jan.ai""#),
+            "settings must be preserved in the canonical location"
+        );
+        assert!(
+            !legacy.exists(),
+            "stale legacy copy must be removed after recovery"
+        );
     }
 
     #[test]

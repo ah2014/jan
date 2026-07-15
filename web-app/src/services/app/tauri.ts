@@ -6,16 +6,23 @@ import { invoke } from '@tauri-apps/api/core'
 import { AppConfiguration } from '@janhq/core'
 import type { FactoryResetOptions, LogEntry } from './types'
 import { DefaultAppService } from './default'
+import { pruneLocalStorageByFlags } from './reset-localstorage'
 
 export class TauriAppService extends DefaultAppService {
   /**
    * Factory reset with optional data preservation.
    *
-   * User settings are persisted to `settings.json` via @tauri-apps/plugin-store
-   * (see #7821). The Rust `factory_reset` command conditionally deletes
-   * directories, config files, and `settings.json` based on the keep flags.
-   * No frontend snapshot/restore is needed — the file store is preserved or
-   * wiped on disk by the Rust side.
+   * User settings are persisted to `<jan_data>/settings.json` by the Rust
+   * settings store (`core::app::settings_store`), and secrets to the OS keyring
+   * (encrypted-file fallback `provider_secrets.enc`). The Rust `factory_reset`
+   * command conditionally deletes directories, config files, `settings.json`,
+   * and `provider_secrets.enc` based on the keep flags — no frontend
+   * snapshot/restore is needed.
+   *
+   * localStorage still holds a frozen pre-migration snapshot (kept so a
+   * downgraded build can read it). The reliable clear happens on next startup
+   * via a Rust sentinel (see `main.tsx`) — renderer-side removal here is a
+   * best-effort supplement that races the restart flush.
    */
   async factoryReset(options?: FactoryResetOptions): Promise<void> {
     const { EngineManager } = await import('@janhq/core')
@@ -28,11 +35,18 @@ export class TauriAppService extends DefaultAppService {
 
     const keepAppData = options?.keepAppData ?? false
     const keepModelsAndConfigs = options?.keepModelsAndConfigs ?? false
+    const clearWebData = options?.clearWebData ?? false
 
-    if (!keepAppData && !keepModelsAndConfigs) {
+    pruneLocalStorageByFlags({ keepAppData, keepModelsAndConfigs })
+
+    if (!keepAppData && !keepModelsAndConfigs && !clearWebData) {
       await invoke('factory_reset')
     } else {
-      await invoke('factory_reset', { keepAppData, keepModelsAndConfigs })
+      await invoke('factory_reset', {
+        keepAppData,
+        keepModelsAndConfigs,
+        clearWebData,
+      })
     }
   }
 

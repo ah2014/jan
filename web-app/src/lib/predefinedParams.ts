@@ -30,6 +30,9 @@ export type SamplerCap =
   | 'grammar'
   | 'json_schema'
   | 'ignore_eos'
+  | 'sampler_order'
+  | 'backend_sampling'
+  | 'thinking_budget'
   | 'client_only'
 
 export interface ParamControllerProps {
@@ -106,7 +109,7 @@ export const paramsSettings: Record<string, ParamDef> = {
     key: 'temperature',
     title: 'Temperature',
     description: 'Controls response randomness.',
-    value: 0.7,
+    value: 0.8,
     controllerType: 'slider',
     controllerProps: { min: 0, max: 2, step: 0.05, warnAbove: 1.5 },
     capability: 'core',
@@ -177,7 +180,7 @@ export const paramsSettings: Record<string, ParamDef> = {
     title: 'Repeat Penalty',
     description:
       'llama.cpp-style multiplicative penalty for repeated tokens. 1.0 = disabled.',
-    value: 1.1,
+    value: 1.0,
     controllerType: 'slider',
     controllerProps: { min: 1, max: 2, step: 0.01, warnAbove: 1.3 },
     capability: 'repetition',
@@ -348,6 +351,88 @@ export const paramsSettings: Record<string, ParamDef> = {
     controllerType: 'checkbox',
     capability: 'ignore_eos',
   },
+  repeat_last_n: {
+    key: 'repeat_last_n',
+    title: 'Repeat Last N',
+    description:
+      'Number of recent tokens considered for the repeat penalty. -1 = full context, 0 = disabled.',
+    value: 64,
+    controllerType: 'input',
+    controllerProps: { min: -1, step: 1 },
+    capability: 'repetition',
+  },
+  samplers: {
+    key: 'samplers',
+    title: 'Sampler Order',
+    description:
+      'Order in which samplers are applied, comma-separated (e.g. "top_k,typ_p,top_p,min_p,xtc,temperature"). Empty = server default order.',
+    value: '',
+    controllerType: 'input',
+    controllerProps: { placeholder: 'top_k,typ_p,top_p,min_p,xtc,temperature' },
+    capability: 'sampler_order',
+  },
+  backend_sampling: {
+    key: 'backend_sampling',
+    title: 'Backend Sampling',
+    description: 'Use the model backend\'s own sampler instead of llama.cpp\'s.',
+    value: false,
+    controllerType: 'checkbox',
+    capability: 'backend_sampling',
+  },
+  thinking_budget_tokens: {
+    key: 'thinking_budget_tokens',
+    title: 'Thinking Budget',
+    description:
+      'Maximum tokens the model may spend on reasoning before being forced to answer. -1 = unlimited.',
+    value: -1,
+    controllerType: 'input',
+    controllerProps: { min: -1, step: 1 },
+    capability: 'thinking_budget',
+  },
+}
+
+/**
+ * Sampler keys exposed as per-model defaults in the model edit dialog. Persist
+ * to the model (model.yml → router preset for llamacpp) and act as defaults the
+ * local API server uses; per-assistant and per-request values override them.
+ */
+export const SAMPLER_DEFAULT_KEYS = [
+  'temperature',
+  'top_p',
+  'top_k',
+  'min_p',
+  'repeat_penalty',
+  'repeat_last_n',
+  'presence_penalty',
+  'frequency_penalty',
+] as const
+
+// The MLX server only forwards these to GenerateParameters (top_k/min_p/
+// presence/frequency are silently dropped); see mlx-server Server.swift.
+export const MLX_SAMPLER_KEYS = [
+  'temperature',
+  'top_p',
+  'repeat_penalty',
+] as const
+
+/** Sampler keys a provider actually honors. */
+export function samplerKeysForProvider(
+  providerId: string
+): readonly string[] {
+  return providerId === 'mlx' ? MLX_SAMPLER_KEYS : SAMPLER_DEFAULT_KEYS
+}
+
+/**
+ * Model settings seed sampler keys with '' (predefined.ts); `??` wouldn't catch
+ * the empty string, so resolve ''/null/undefined to the param's default.
+ */
+export function resolveSamplerValue(
+  stored: unknown,
+  fallback: string | number | boolean
+): string | number | boolean {
+  return stored === undefined || stored === null || stored === ''
+    ? fallback
+    : (stored as string | number | boolean)
 }
 
 /**
@@ -373,6 +458,10 @@ export const LLAMACPP_ONLY_PARAM_KEYS: ReadonlySet<string> = new Set([
   'ignore_eos',
   'min_p',
   'repeat_penalty',
+  'repeat_last_n',
+  'samplers',
+  'backend_sampling',
+  'thinking_budget_tokens',
 ])
 
 export function evaluateDisabled(
@@ -475,7 +564,12 @@ export const paramCategories: CategoryDef[] = [
   {
     id: 'penalties',
     title: 'Penalties',
-    paramKeys: ['frequency_penalty', 'presence_penalty', 'repeat_penalty'],
+    paramKeys: [
+      'frequency_penalty',
+      'presence_penalty',
+      'repeat_penalty',
+      'repeat_last_n',
+    ],
     groupIds: [],
   },
   {
@@ -488,13 +582,14 @@ export const paramCategories: CategoryDef[] = [
       'auto_compact',
       'max_context_tokens',
       'ignore_eos',
+      'thinking_budget_tokens',
     ],
     groupIds: [],
   },
   {
     id: 'advanced',
     title: 'Advanced samplers',
-    paramKeys: ['typical_p', 'top_n_sigma'],
+    paramKeys: ['typical_p', 'top_n_sigma', 'samplers', 'backend_sampling'],
     groupIds: ['mirostat', 'dry', 'xtc', 'dynatemp'],
   },
 ]

@@ -1,3 +1,6 @@
+import { logger } from '@janhq/core'
+import { getBackendSetting, setBackendSetting } from './backend-settings'
+
 // File path utilities
 export function basenameNoExt(filePath: string): string {
   const VALID_EXTENSIONS = [".tar.gz", ".zip"];
@@ -32,11 +35,22 @@ interface ProxyState {
   noProxy: string
 }
 
-export function getDefaultEmbeddingModelId(
+const DEFAULT_EMBEDDING_MODEL_KEY = 'default-embedding-model'
+
+// The web-app's useDefaultEmbeddingModel store persists this key through
+// the Rust settings backend (settings_get/settings_set -> settings.json),
+// not webview localStorage, on desktop. Read/write the same backend so this
+// extension sees the model the user actually picked in Settings; localStorage
+// is only a fallback for `dev:web` (no Tauri shell).
+async function readDefaultEmbeddingModelRaw(): Promise<string | null> {
+  return getBackendSetting(DEFAULT_EMBEDDING_MODEL_KEY)
+}
+
+export async function getDefaultEmbeddingModelId(
   provider: string = 'llamacpp'
-): string | undefined {
+): Promise<string | undefined> {
   try {
-    const raw = localStorage.getItem('default-embedding-model')
+    const raw = await readDefaultEmbeddingModelRaw()
     if (!raw) return undefined
     const parsed = JSON.parse(raw)
     const map = parsed?.state?.defaultByProvider
@@ -47,28 +61,31 @@ export function getDefaultEmbeddingModelId(
   }
 }
 
-export function setDefaultEmbeddingModelId(provider: string, modelId: string) {
+export async function setDefaultEmbeddingModelId(
+  provider: string,
+  modelId: string
+) {
   try {
-    const raw = localStorage.getItem('default-embedding-model')
+    const raw = await readDefaultEmbeddingModelRaw()
     const parsed = raw ? JSON.parse(raw) : { state: {}, version: 0 }
     const state = parsed.state ?? {}
     const map = state.defaultByProvider ?? {}
     map[provider] = modelId
     parsed.state = { ...state, defaultByProvider: map }
     if (parsed.version === undefined) parsed.version = 0
-    localStorage.setItem('default-embedding-model', JSON.stringify(parsed))
+    const serialized = JSON.stringify(parsed)
+    await setBackendSetting(DEFAULT_EMBEDDING_MODEL_KEY, serialized)
   } catch {
-    /* localStorage write failed; non-fatal */
+    /* non-fatal */
   }
 }
 
-export function getProxyConfig(): Record<
+export async function getProxyConfig(): Promise<Record<
   string,
   string | string[] | boolean
-> | null {
+> | null> {
   try {
-    // Retrieve proxy configuration from localStorage
-    const proxyConfigString = localStorage.getItem('setting-proxy-config')
+    const proxyConfigString = await getBackendSetting('setting-proxy-config')
     if (!proxyConfigString) {
       return null
     }
@@ -111,8 +128,7 @@ export function getProxyConfig(): Record<
     proxyConfig.verify_peer_ssl = proxyState.verifyPeerSSL
     proxyConfig.verify_host_ssl = proxyState.verifyHostSSL
 
-    // Log proxy configuration for debugging
-    console.log('Using proxy configuration:', {
+    logger.info('Using proxy configuration:', {
       url: proxyState.proxyUrl,
       hasAuth: !!(proxyState.proxyUsername && proxyState.proxyPassword),
       noProxyCount: proxyConfig.no_proxy
@@ -127,7 +143,7 @@ export function getProxyConfig(): Record<
 
     return proxyConfig
   } catch (error) {
-    console.error('Failed to parse proxy configuration:', error)
+    logger.error('Failed to parse proxy configuration:', error)
     if (error instanceof SyntaxError) {
       // JSON parsing error - return null
       return null

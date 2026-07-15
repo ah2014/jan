@@ -5,16 +5,23 @@ import { useAppState } from './useAppState'
 import { useToolAvailable } from './useToolAvailable'
 import { ExtensionManager } from '@/lib/extension'
 import { ExtensionTypeEnum, MCPExtension } from '@janhq/core'
+import { mcpOrchestrator } from '@/lib/mcp-orchestrator/mcp-orchestrator'
 
 export const useTools = () => {
   const updateTools = useAppState((state) => state.updateTools)
   const updateRagToolNames = useAppState((state) => state.updateRagToolNames)
   const updateMcpToolNames = useAppState((state) => state.updateMcpToolNames)
-  const { isDefaultsInitialized, setDefaultDisabledTools, markDefaultsAsInitialized } = useToolAvailable()
+  const { isDefaultsInitialized, setDisabledTools, markDefaultsAsInitialized } = useToolAvailable()
 
   useEffect(() => {
     async function setTools() {
       try {
+        // A server connect/disconnect/tools-refresh fired this (mcp-update);
+        // the orchestrator's per-request tool cache would otherwise only
+        // notice via its own TTL, serving stale/reordered tools in the
+        // meantime and destabilizing the KV-cache prefix Jan sends.
+        mcpOrchestrator.invalidateCache()
+
         // Get MCP extension first
         const mcpExtension = ExtensionManager.getInstance().get<MCPExtension>(
           ExtensionTypeEnum.MCP
@@ -45,7 +52,7 @@ export const useTools = () => {
         if (!isDefaultsInitialized() && mcpTools.length > 0 && mcpExtension?.getDefaultDisabledTools) {
           const defaultDisabled = await mcpExtension.getDefaultDisabledTools()
           if (defaultDisabled.length > 0) {
-            setDefaultDisabledTools(defaultDisabled)
+            setDisabledTools(defaultDisabled)
             markDefaultsAsInitialized()
           }
         }

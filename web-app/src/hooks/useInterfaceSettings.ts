@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist, createJSONStorage } from 'zustand/middleware'
 import { localStorageKey } from '@/constants/localStorage'
+import { backendStorage } from '@/lib/backendStorage'
 import { useTheme } from './useTheme'
 import {
   getDefaultNotificationPosition,
@@ -109,10 +110,16 @@ interface InterfaceSettingsState {
   accentColor: AccentColorValue
   notificationPosition: NotificationPosition
   showTokenSpeed: boolean
+  coloredUserBubble: boolean
+  renderHtmlArtifacts: boolean
+  autoGenerateTitle: boolean
   setFontSize: (size: FontSize) => void
   setAccentColor: (color: AccentColorValue) => void
   setNotificationPosition: (position: NotificationPosition) => void
   setShowTokenSpeed: (show: boolean) => void
+  setColoredUserBubble: (colored: boolean) => void
+  setRenderHtmlArtifacts: (render: boolean) => void
+  setAutoGenerateTitle: (auto: boolean) => void
   resetInterface: () => void
 }
 
@@ -123,6 +130,9 @@ type InterfaceSettingsPersistedSlice = Omit<
   | 'setAccentColor'
   | 'setNotificationPosition'
   | 'setShowTokenSpeed'
+  | 'setColoredUserBubble'
+  | 'setRenderHtmlArtifacts'
+  | 'setAutoGenerateTitle'
 >
 
 export const fontSizeOptions = [
@@ -141,11 +151,14 @@ const createDefaultInterfaceValues = (): InterfaceSettingsPersistedSlice => {
     accentColor: DEFAULT_ACCENT_COLOR,
     notificationPosition: getDefaultNotificationPosition(),
     showTokenSpeed: true,
+    coloredUserBubble: true,
+    renderHtmlArtifacts: false,
+    autoGenerateTitle: true,
   }
 }
 
-const interfaceStorage = createJSONStorage<InterfaceSettingsPersistedSlice>(() =>
-  localStorage
+const interfaceStorage = createJSONStorage<InterfaceSettingsPersistedSlice>(
+  () => backendStorage
 )
 
 export const useInterfaceSettings = create<InterfaceSettingsState>()(
@@ -177,6 +190,9 @@ export const useInterfaceSettings = create<InterfaceSettingsState>()(
             accentColor: DEFAULT_ACCENT_COLOR,
             notificationPosition: getDefaultNotificationPosition(),
             showTokenSpeed: true,
+            coloredUserBubble: true,
+            renderHtmlArtifacts: false,
+            autoGenerateTitle: true,
           })
         },
 
@@ -204,16 +220,32 @@ export const useInterfaceSettings = create<InterfaceSettingsState>()(
         setShowTokenSpeed: (show) => {
           set({ showTokenSpeed: show })
         },
+
+        setColoredUserBubble: (colored) => {
+          set({ coloredUserBubble: colored })
+        },
+
+        setRenderHtmlArtifacts: (render) => {
+          set({ renderHtmlArtifacts: render })
+        },
+
+        setAutoGenerateTitle: (auto) => {
+          set({ autoGenerateTitle: auto })
+        },
       }
     },
     {
       name: localStorageKey.settingInterface,
       storage: interfaceStorage,
+      skipHydration: true,
       partialize: (state) => ({
         fontSize: state.fontSize,
         accentColor: state.accentColor,
         notificationPosition: state.notificationPosition,
         showTokenSpeed: state.showTokenSpeed,
+        coloredUserBubble: state.coloredUserBubble,
+        renderHtmlArtifacts: state.renderHtmlArtifacts,
+        autoGenerateTitle: state.autoGenerateTitle,
       }),
       // Apply settings when hydrating from storage
       onRehydrateStorage: () => (state) => {
@@ -246,6 +278,18 @@ export const useInterfaceSettings = create<InterfaceSettingsState>()(
           if (typeof state.showTokenSpeed !== 'boolean') {
             state.showTokenSpeed = true
           }
+
+          if (typeof state.coloredUserBubble !== 'boolean') {
+            state.coloredUserBubble = true
+          }
+
+          if (typeof state.renderHtmlArtifacts !== 'boolean') {
+            state.renderHtmlArtifacts = false
+          }
+
+          if (typeof state.autoGenerateTitle !== 'boolean') {
+            state.autoGenerateTitle = true
+          }
         }
 
         // Return the state to be used for hydration
@@ -257,10 +301,15 @@ export const useInterfaceSettings = create<InterfaceSettingsState>()(
 
 // Subscribe to theme changes to update accent color sidebar variant
 let prevIsDark = useTheme.getState().isDark
-useTheme.subscribe((state) => {
+const unsubscribeTheme = useTheme.subscribe((state) => {
   if (state.isDark !== prevIsDark) {
     prevIsDark = state.isDark
     const { accentColor } = useInterfaceSettings.getState()
     applyAccentColorToDOM(accentColor, state.isDark)
   }
 })
+
+// Detach the module-level subscription on HMR so reloads don't stack listeners.
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => unsubscribeTheme())
+}

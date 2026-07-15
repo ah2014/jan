@@ -55,6 +55,12 @@ macro_rules! invoke_commands_with_extras {
         core::app::commands::default_data_folder_path,
         core::app::commands::change_app_data_folder,
         core::app::commands::app_token,
+        // Backend-owned settings store (webview zustand persistence)
+        core::app::settings_store::settings_get,
+        core::app::settings_store::settings_set,
+        core::app::settings_store::settings_remove,
+        core::server::provider_secrets::set_secret,
+        core::server::provider_secrets::get_secret,
         // Extension commands
         core::extensions::commands::get_jan_extensions_path,
         core::extensions::commands::install_extensions,
@@ -64,6 +70,7 @@ macro_rules! invoke_commands_with_extras {
         core::system::commands::open_app_directory,
         core::system::commands::open_file_explorer,
         core::system::commands::factory_reset,
+        core::system::commands::take_pending_webdata_reset,
         core::system::commands::read_logs,
         core::system::commands::is_library_available,
         core::system::commands::launch_claude_code_with_config,
@@ -85,7 +92,10 @@ macro_rules! invoke_commands_with_extras {
         // Remote provider commands
         core::server::remote_provider_commands::register_provider_config,
         core::server::remote_provider_commands::unregister_provider_config,
+        core::server::remote_provider_commands::delete_provider_keys,
+        core::server::remote_provider_commands::set_model_param_defaults,
         core::server::remote_provider_commands::get_provider_config,
+        core::server::remote_provider_commands::get_provider_keys,
         core::server::remote_provider_commands::list_provider_configs,
         core::server::remote_provider_commands::set_provider_model_capabilities,
         // MCP commands
@@ -122,6 +132,7 @@ macro_rules! invoke_commands_with_extras {
         // Theme
         core::setup::get_system_theme,
         core::setup::set_gtk_prefer_dark,
+        core::setup::get_titlebar_layout,
         $(
             $extra,
         )*
@@ -281,7 +292,9 @@ pub fn run() {
             background_cleanup_handle: Arc::new(Mutex::new(None)),
             mcp_server_pids: Arc::new(Mutex::new(HashMap::new())),
             provider_configs: Arc::new(Mutex::new(HashMap::new())),
+            model_param_defaults: Arc::new(Mutex::new(HashMap::new())),
             mcp_reconnect_notify: Arc::new(tokio::sync::Notify::new()),
+            mcp_last_known_tools: Arc::new(Mutex::new(HashMap::new())),
         })
         .setup(|app| {
             app.handle().plugin(
@@ -433,6 +446,10 @@ pub fn run() {
         }
         if let RunEvent::Exit = event {
             let app_handle = app.clone();
+
+            // Drain any debounced settings writes before the process dies so
+            // jan-cli never reads a stale settings.json.
+            core::app::settings_store::flush_settings();
 
             #[cfg(not(any(target_os = "ios", target_os = "android")))]
             {

@@ -2,7 +2,7 @@ use flate2::read::GzDecoder;
 use std::{
     fs::{self, File},
     io::Read,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -24,6 +24,21 @@ use super::{
     extensions::commands::get_jan_extensions_path, mcp::helpers::run_mcp_commands, state::AppState,
 };
 
+fn extensions_manifest_intact(manifest_path: &Path) -> bool {
+    let Ok(data) = fs::read_to_string(manifest_path) else {
+        return false;
+    };
+    let Ok(entries) = serde_json::from_str::<Vec<serde_json::Value>>(&data) else {
+        return false;
+    };
+    !entries.is_empty()
+        && entries.iter().all(|ext| {
+            ext.get("url")
+                .and_then(|u| u.as_str())
+                .is_some_and(|u| Path::new(u).exists())
+        })
+}
+
 pub fn install_extensions<R: Runtime>(app: tauri::AppHandle<R>, force: bool) -> Result<(), String> {
     // Skip extension installation on mobile platforms
     // Mobile uses pre-bundled extensions loaded via MobileCoreService in the frontend
@@ -33,10 +48,11 @@ pub fn install_extensions<R: Runtime>(app: tauri::AppHandle<R>, force: bool) -> 
     }
 
     let extensions_path = get_jan_extensions_path(app.clone());
+    let extensions_json_path = extensions_path.join("extensions.json");
     let pre_install_path = app
         .path()
         .resource_dir()
-        .unwrap()
+        .map_err(|e| format!("Could not resolve resource dir: {e}"))?
         .join("resources")
         .join("pre-install");
 
@@ -47,23 +63,34 @@ pub fn install_extensions<R: Runtime>(app: tauri::AppHandle<R>, force: bool) -> 
         clean_up = true;
     }
     log::info!("Installing extensions. Clean up: {clean_up}");
-    if !clean_up && extensions_path.exists() {
+    // A bare directory (or a surviving manifest) is not proof of a completed
+    // install; gate on the manifest AND on the files it points at so a partial
+    // or externally-deleted install self-heals on the next launch.
+    if !clean_up && extensions_manifest_intact(&extensions_json_path) {
         return Ok(());
     }
 
-    // Attempt to remove extensions folder
+    // Validate the install source before mutating anything. A missing/unreadable
+    // pre-install dir must not wipe a working install or leave a half-built one.
+    let pre_install_entries = match fs::read_dir(&pre_install_path) {
+        Ok(entries) => entries,
+        Err(e) => {
+            log::warn!(
+                "Skipping extension install; pre-install dir unavailable at {pre_install_path:?}: {e}"
+            );
+            return Ok(());
+        }
+    };
+
+    // Source is good — now it's safe to clear and recreate the target.
     if extensions_path.exists() {
         fs::remove_dir_all(&extensions_path).unwrap_or_else(|_| {
             log::info!("Failed to remove existing extensions folder, it may not exist.");
         });
     }
-
-    // Attempt to create it again
     if !extensions_path.exists() {
         fs::create_dir_all(&extensions_path).map_err(|e| e.to_string())?;
     }
-
-    let extensions_json_path = extensions_path.join("extensions.json");
     let mut extensions_list = if extensions_json_path.exists() {
         let existing_data =
             fs::read_to_string(&extensions_json_path).unwrap_or_else(|_| "[]".to_string());
@@ -72,7 +99,7 @@ pub fn install_extensions<R: Runtime>(app: tauri::AppHandle<R>, force: bool) -> 
         vec![]
     };
 
-    for entry in fs::read_dir(&pre_install_path).map_err(|e| e.to_string())? {
+    for entry in pre_install_entries {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
 
@@ -407,9 +434,9 @@ pub fn setup_tray(app: &App) -> tauri::Result<TrayIcon> {
         .build(app)
 }
 
-/// Shrink tao's Wayland CSD titlebar (~46px → ~24px) and clear its hardcoded
-/// `decoration_layout` so buttons follow GNOME. Do NOT `set_titlebar` here —
-/// that replaces tao's drag-enabled HeaderBar and breaks drag/double-click.
+/// Shrink the GTK header bar on Linux CSD desktops so it doesn't waste vertical
+/// space under the window controls. GTK/glib is only a dependency on Linux, so
+/// the whole function is gated to `target_os = "linux"`.
 #[cfg(target_os = "linux")]
 pub fn shrink_gtk_headerbar<R: Runtime>(app: &App<R>) {
     use gtk::prelude::*;
@@ -510,6 +537,121 @@ async fn read_xdg_portal_color_scheme() -> Result<Option<&'static str>, Box<dyn 
     Ok(match color_scheme {
         1 => Some("dark"),
         _ => Some("light"),
+    })
+}
+
+/// Window-control placement split by side. Values are `"minimize"`,
+/// `"maximize"`, `"close"`; the borderless frontend renders its own buttons in
+/// this order so they match the desktop's configured layout.
+#[derive(serde::Serialize)]
+pub struct TitlebarLayout {
+    pub left: Vec<String>,
+    pub right: Vec<String>,
+}
+
+impl Default for TitlebarLayout {
+    fn default() -> Self {
+        TitlebarLayout {
+            left: vec![],
+            right: vec![
+                "minimize".to_string(),
+                "maximize".to_string(),
+                "close".to_string(),
+            ],
+        }
+    }
+}
+
+/// Read the desktop's window-button layout so the borderless titlebar can place
+/// min/max/close on the side the user configured (KDE `kwinrc`, GNOME gsettings).
+/// Falls back to all-on-the-right on non-Linux or when the config is unreadable.
+#[tauri::command]
+pub fn get_titlebar_layout() -> TitlebarLayout {
+    #[cfg(target_os = "linux")]
+    {
+        let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+        let is_kde = desktop.split(':').any(|d| d.eq_ignore_ascii_case("KDE"));
+        let layout = if is_kde {
+            read_kde_button_layout()
+        } else {
+            read_gnome_button_layout()
+        };
+        if let Some(layout) = layout {
+            return layout;
+        }
+    }
+    TitlebarLayout::default()
+}
+
+/// Parse `~/.config/kwinrc` `[org.kde.kdecoration2]` button codes
+/// (`I`=minimize, `A`=maximize, `X`=close; others ignored). Defaults match
+/// KDE's own (`MS` left / `IAX` right) when the keys are absent.
+#[cfg(target_os = "linux")]
+fn read_kde_button_layout() -> Option<TitlebarLayout> {
+    let home = std::env::var("HOME").ok()?;
+    let content =
+        fs::read_to_string(PathBuf::from(home).join(".config/kwinrc")).unwrap_or_default();
+
+    let mut left = "MS".to_string();
+    let mut right = "IAX".to_string();
+    let mut in_section = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_section = line == "[org.kde.kdecoration2]";
+        } else if in_section {
+            if let Some(v) = line.strip_prefix("ButtonsOnLeft=") {
+                left = v.trim().to_string();
+            } else if let Some(v) = line.strip_prefix("ButtonsOnRight=") {
+                right = v.trim().to_string();
+            }
+        }
+    }
+
+    let codes = |s: &str| -> Vec<String> {
+        s.chars()
+            .filter_map(|c| match c {
+                'I' => Some("minimize".to_string()),
+                'A' => Some("maximize".to_string()),
+                'X' => Some("close".to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    Some(TitlebarLayout {
+        left: codes(&left),
+        right: codes(&right),
+    })
+}
+
+/// Read GNOME's `button-layout` (`"appmenu:minimize,maximize,close"`); the side
+/// before `:` is the left cluster. Unknown tokens (appmenu/icon/spacer) ignored.
+#[cfg(target_os = "linux")]
+fn read_gnome_button_layout() -> Option<TitlebarLayout> {
+    let output = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.wm.preferences", "button-layout"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let raw = raw.trim().trim_matches('\'');
+    let (left, right) = raw.split_once(':').unwrap_or(("", raw));
+
+    let tokens = |s: &str| -> Vec<String> {
+        s.split(',')
+            .filter_map(|t| match t.trim() {
+                "minimize" => Some("minimize".to_string()),
+                "maximize" => Some("maximize".to_string()),
+                "close" => Some("close".to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    Some(TitlebarLayout {
+        left: tokens(left),
+        right: tokens(right),
     })
 }
 
@@ -633,4 +775,52 @@ fn setup_window_theme_listener<R: Runtime>(
             let _ = app_handle_clone.emit("theme-changed", theme_str);
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn write_manifest(dir: &Path, urls: &[&str]) -> PathBuf {
+        let entries: Vec<serde_json::Value> = urls
+            .iter()
+            .map(|u| serde_json::json!({ "name": "@janhq/x", "url": u }))
+            .collect();
+        let manifest = dir.join("extensions.json");
+        fs::write(&manifest, serde_json::to_string(&entries).unwrap()).unwrap();
+        manifest
+    }
+
+    #[test]
+    fn intact_when_all_referenced_files_exist() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ext = tmp.path().join("dist/index.js");
+        fs::create_dir_all(ext.parent().unwrap()).unwrap();
+        fs::write(&ext, "").unwrap();
+        let manifest = write_manifest(tmp.path(), &[ext.to_str().unwrap()]);
+        assert!(extensions_manifest_intact(&manifest));
+    }
+
+    #[test]
+    fn not_intact_when_a_referenced_file_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = write_manifest(tmp.path(), &[tmp.path().join("gone.js").to_str().unwrap()]);
+        assert!(!extensions_manifest_intact(&manifest));
+    }
+
+    #[test]
+    fn not_intact_when_manifest_missing_or_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!extensions_manifest_intact(&tmp.path().join("extensions.json")));
+        let empty = write_manifest(tmp.path(), &[]);
+        assert!(!extensions_manifest_intact(&empty));
+    }
+
+    #[test]
+    fn not_intact_when_extensions_dir_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("extensions").join("extensions.json");
+        assert!(!extensions_manifest_intact(&manifest));
+    }
 }

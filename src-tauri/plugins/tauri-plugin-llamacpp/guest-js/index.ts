@@ -116,6 +116,7 @@ export function normalizeLlamacppConfig(config: any): LlamacppConfig {
     cache_reuse: asI32(config.cache_reuse, 0),
     swa_full: asBool(config.swa_full),
     keep: asI32(config.keep, 0),
+    kv_unified: asString(config.kv_unified, 'auto'),
   }
 }
 
@@ -175,6 +176,14 @@ export async function getLoadedModels(): Promise<string[]> {
 
 export async function routerSlotsIdle(modelId?: string): Promise<boolean> {
   return await invoke('plugin:llamacpp|router_slots_idle', { modelId })
+}
+
+/**
+ * Live-reload the router preset without restarting the process. Backend must
+ * support the reload diff path (upstream b9023+); gate on build at the caller.
+ */
+export async function reloadRouterModels(): Promise<void> {
+  return await invoke('plugin:llamacpp|reload_router_models')
 }
 
 // GGUF commands

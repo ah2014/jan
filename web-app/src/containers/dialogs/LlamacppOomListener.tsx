@@ -2,52 +2,30 @@ import { useEffect } from 'react'
 import { listen } from '@tauri-apps/api/event'
 
 import { useAppState } from '@/hooks/useAppState'
-import { useMessages } from '@/hooks/useMessages'
 import { isPlatformTauri } from '@/lib/platform/utils'
+import {
+  clearActiveWork,
+  hasActiveLlamacppRequest,
+  stampErrorOnLastUserMessage,
+} from './llamacppRouterError'
 
-function stampErrorOnLastUserMessage(
-  field: 'oomError' | 'backendError',
-  value: string
-) {
-  const threadId = useAppState.getState().currentStreamThreadId
-  if (!threadId) return
-  const messages = useMessages.getState().getMessages(threadId)
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const m = messages[i]
-    if (m.role !== 'user') continue
-    const meta = (m.metadata as Record<string, unknown> | undefined) ?? {}
-    if (meta[field] === value) return
-    useMessages.getState().updateMessage({
-      ...m,
-      metadata: { ...meta, [field]: value },
-    })
-    return
-  }
+type LoadProgressPayload = {
+  model: string
+  stage?: string
+  stages: string[]
+  value: number
 }
 
-function clearActiveWork() {
-  const app = useAppState.getState()
-  Object.values(app.abortControllers).forEach((c) => {
-    try {
-      c.abort()
-    } catch (e) {
-      console.warn('router error: abort controller threw:', e)
-    }
-  })
-  const threadIds = new Set<string>([
-    ...Object.keys(app.loadingModels),
-    ...Object.keys(app.busyThreads),
-    ...Object.keys(app.streamingContents),
-    ...Object.keys(app.abortControllers),
-  ])
-  threadIds.forEach((id) => app.clearThreadState(id))
-  app.updateLoadingModel(false)
+type UnloadEventPayload = {
+  model: string
+  exit_code?: number | null
 }
 
 export default function LlamacppOomListener() {
   useEffect(() => {
     if (!isPlatformTauri()) return
     const unlistenOom = listen<string>('llamacpp-router-oom', (event) => {
+      if (!hasActiveLlamacppRequest()) return
       const payload = event.payload ?? ''
       stampErrorOnLastUserMessage('oomError', payload)
       clearActiveWork()
@@ -59,6 +37,7 @@ export default function LlamacppOomListener() {
     const unlistenBackend = listen<string>(
       'llamacpp-router-backend-error',
       (event) => {
+        if (!hasActiveLlamacppRequest()) return
         const payload = event.payload ?? ''
         stampErrorOnLastUserMessage('backendError', payload)
         clearActiveWork()
@@ -68,9 +47,40 @@ export default function LlamacppOomListener() {
       console.warn('listen llamacpp-router-backend-error failed:', e)
       return () => {}
     })
+    const unlistenLoadProgress = listen<LoadProgressPayload>(
+      'llamacpp-model-load-progress',
+      (event) => {
+        const { model, stage, stages, value } = event.payload
+        const progress = { modelId: model, stage, stages, value }
+        useAppState.getState().updateModelLoadProgress(progress)
+        const threadId = useAppState.getState().currentStreamThreadId
+        if (threadId) {
+          useAppState.getState().updateThreadModelLoadProgress(threadId, progress)
+        }
+      }
+    ).catch((e) => {
+      console.warn('listen llamacpp-model-load-progress failed:', e)
+      return () => {}
+    })
+    // Fired for every model unload the router observes (explicit unload, LRU
+    // eviction under models_max, or a crash) - forwarded unconditionally.
+    // Jan already flips activeModels off for unloads it requested itself, so
+    // reconciling an already-correct state here is a harmless no-op; the
+    // real value is catching router-side evictions Jan didn't initiate.
+    const unlistenUnloaded = listen<UnloadEventPayload>(
+      'llamacpp-model-unloaded',
+      (event) => {
+        useAppState.getState().removeActiveModel(event.payload.model)
+      }
+    ).catch((e) => {
+      console.warn('listen llamacpp-model-unloaded failed:', e)
+      return () => {}
+    })
     return () => {
       void unlistenOom.then((fn) => fn?.())
       void unlistenBackend.then((fn) => fn?.())
+      void unlistenLoadProgress.then((fn) => fn?.())
+      void unlistenUnloaded.then((fn) => fn?.())
     }
   }, [])
 

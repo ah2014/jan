@@ -9,6 +9,20 @@ export type PromptProgress = {
   total: number
 }
 
+export type LiveTokenStats = {
+  promptTokens: number
+  completionTokens: number
+  tokensPerSecond: number | null
+  promptPerSecond: number | null
+}
+
+export type ModelLoadProgress = {
+  modelId: string
+  value: number
+  stage?: string
+  stages?: string[]
+}
+
 type AppErrorMessage = {
   message?: string
   title?: string
@@ -26,15 +40,20 @@ type AppState = {
   showOutOfContextDialog?: boolean
   errorMessage?: AppErrorMessage
   promptProgress?: PromptProgress
+  liveTokenStats?: LiveTokenStats
+  modelLoadProgress?: ModelLoadProgress
   activeModels: string[]
   cancelToolCall?: () => void
 
   streamingContents: Record<string, ThreadMessage>
   loadingModels: Record<string, boolean>
   promptProgresses: Record<string, PromptProgress>
+  liveTokenStatsByThread: Record<string, LiveTokenStats>
+  modelLoadProgressByThread: Record<string, ModelLoadProgress>
   cancelToolCalls: Record<string, () => void>
   errorMessages: Record<string, AppErrorMessage>
   busyThreads: Record<string, boolean>
+  embeddingThreads: Record<string, boolean>
   currentStreamThreadId?: string
   oomError?: string
   backendError?: string
@@ -54,7 +73,10 @@ type AppState = {
   setCancelToolCall: (cancel: (() => void) | undefined) => void
   setErrorMessage: (error: AppErrorMessage | undefined) => void
   updatePromptProgress: (progress: PromptProgress | undefined) => void
+  updateLiveTokenStats: (stats: LiveTokenStats | undefined) => void
+  updateModelLoadProgress: (progress: ModelLoadProgress | undefined) => void
   setActiveModels: (models: string[]) => void
+  removeActiveModel: (modelId: string) => void
 
   updateThreadStreamingContent: (
     threadId: string,
@@ -64,6 +86,14 @@ type AppState = {
   updateThreadPromptProgress: (
     threadId: string,
     progress: PromptProgress | undefined
+  ) => void
+  updateThreadLiveTokenStats: (
+    threadId: string,
+    stats: LiveTokenStats | undefined
+  ) => void
+  updateThreadModelLoadProgress: (
+    threadId: string,
+    progress: ModelLoadProgress | undefined
   ) => void
   setThreadCancelToolCall: (
     threadId: string,
@@ -76,6 +106,7 @@ type AppState = {
   clearThreadState: (threadId: string) => void
   setCurrentStreamThreadId: (threadId: string | undefined) => void
   setThreadBusy: (threadId: string, busy: boolean) => void
+  setThreadEmbedding: (threadId: string, embedding: boolean) => void
 }
 
 export const useAppState = create<AppState>()((set) => ({
@@ -92,9 +123,12 @@ export const useAppState = create<AppState>()((set) => ({
   streamingContents: {},
   loadingModels: {},
   promptProgresses: {},
+  liveTokenStatsByThread: {},
+  modelLoadProgressByThread: {},
   cancelToolCalls: {},
   errorMessages: {},
   busyThreads: {},
+  embeddingThreads: {},
   currentStreamThreadId: undefined,
   setCurrentStreamThreadId: (threadId) => set({ currentStreamThreadId: threadId }),
   setOomError: (line) => set({ oomError: line }),
@@ -105,6 +139,13 @@ export const useAppState = create<AppState>()((set) => ({
       if (busy) next[threadId] = true
       else delete next[threadId]
       return { busyThreads: next }
+    }),
+  setThreadEmbedding: (threadId, embedding) =>
+    set((state) => {
+      const next = { ...state.embeddingThreads }
+      if (embedding) next[threadId] = true
+      else delete next[threadId]
+      return { embeddingThreads: next }
     }),
   updateStreamingContent: (content: ThreadMessage | undefined) => {
     set(() => ({
@@ -165,9 +206,24 @@ export const useAppState = create<AppState>()((set) => ({
       promptProgress: progress,
     }))
   },
+  updateLiveTokenStats: (stats) => {
+    set(() => ({
+      liveTokenStats: stats,
+    }))
+  },
+  updateModelLoadProgress: (progress) => {
+    set(() => ({
+      modelLoadProgress: progress,
+    }))
+  },
   setActiveModels: (models: string[]) => {
     set(() => ({
       activeModels: models,
+    }))
+  },
+  removeActiveModel: (modelId: string) => {
+    set((state) => ({
+      activeModels: state.activeModels.filter((id) => id !== modelId),
     }))
   },
 
@@ -198,6 +254,20 @@ export const useAppState = create<AppState>()((set) => ({
       else delete next[threadId]
       return { promptProgresses: next }
     }),
+  updateThreadLiveTokenStats: (threadId, stats) =>
+    set((state) => {
+      const next = { ...state.liveTokenStatsByThread }
+      if (stats) next[threadId] = stats
+      else delete next[threadId]
+      return { liveTokenStatsByThread: next }
+    }),
+  updateThreadModelLoadProgress: (threadId, progress) =>
+    set((state) => {
+      const next = { ...state.modelLoadProgressByThread }
+      if (progress) next[threadId] = progress
+      else delete next[threadId]
+      return { modelLoadProgressByThread: next }
+    }),
   setThreadCancelToolCall: (threadId, cancel) =>
     set((state) => {
       const next = { ...state.cancelToolCalls }
@@ -217,22 +287,31 @@ export const useAppState = create<AppState>()((set) => ({
       const streamingContents = { ...state.streamingContents }
       const loadingModels = { ...state.loadingModels }
       const promptProgresses = { ...state.promptProgresses }
+      const liveTokenStatsByThread = { ...state.liveTokenStatsByThread }
+      const modelLoadProgressByThread = { ...state.modelLoadProgressByThread }
       const cancelToolCalls = { ...state.cancelToolCalls }
       const errorMessages = { ...state.errorMessages }
       const busyThreads = { ...state.busyThreads }
+      const embeddingThreads = { ...state.embeddingThreads }
       delete streamingContents[threadId]
       delete loadingModels[threadId]
       delete promptProgresses[threadId]
+      delete liveTokenStatsByThread[threadId]
+      delete modelLoadProgressByThread[threadId]
       delete cancelToolCalls[threadId]
       delete errorMessages[threadId]
       delete busyThreads[threadId]
+      delete embeddingThreads[threadId]
       return {
         streamingContents,
         loadingModels,
         promptProgresses,
+        liveTokenStatsByThread,
+        modelLoadProgressByThread,
         cancelToolCalls,
         errorMessages,
         busyThreads,
+        embeddingThreads,
       }
     }),
 }))

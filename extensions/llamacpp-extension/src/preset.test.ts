@@ -4,6 +4,12 @@ const writtenFiles: Record<string, string> = {}
 const modelYamls: Record<string, unknown> = {}
 
 vi.mock('@janhq/core', () => ({
+  logger: {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
   fs: {
     existsSync: vi.fn(async (p: string) => p === '/p/models' || p in modelYamls),
     mkdir: vi.fn(async () => undefined),
@@ -92,6 +98,58 @@ describe('generatePreset MTP emission', () => {
     expect(ini).not.toContain('spec-type')
   })
 
+  it('emits spec-draft-model for a separate MTP gguf even when main reports 0 heads', async () => {
+    setupModel('gemma', {
+      mtp: true,
+      mtp_layers: 0,
+      mtp_model_path: 'models/gemma/mtp.gguf',
+    })
+    await generatePreset('/p', '/jan', CONFIG, { supportsMtp: true })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('spec-type = draft-mtp')
+    expect(ini).toContain('spec-draft-model = /jan/models/gemma/mtp.gguf')
+  })
+
+  it('does not emit spec-draft-model for embedded MTP (no draft path)', async () => {
+    setupModel('glm', { mtp: true, mtp_layers: 1 })
+    await generatePreset('/p', '/jan', CONFIG, { supportsMtp: true })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('spec-type = draft-mtp')
+    expect(ini).not.toContain('spec-draft-model')
+  })
+
+  it('emits per-model sampling defaults with CLI-style INI keys', async () => {
+    setupModel('s', {
+      temperature: 0,
+      top_k: 40,
+      top_p: 0.9,
+      min_p: 0.05,
+      repeat_last_n: 64,
+      repeat_penalty: 1.1,
+      presence_penalty: 0.5,
+      frequency_penalty: 0.25,
+    })
+    await generatePreset('/p', '/jan', CONFIG, { supportsMtp: false })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('temperature = 0')
+    expect(ini).toContain('top-k = 40')
+    expect(ini).toContain('top-p = 0.9')
+    expect(ini).toContain('min-p = 0.05')
+    expect(ini).toContain('repeat-last-n = 64')
+    expect(ini).toContain('repeat-penalty = 1.1')
+    expect(ini).toContain('presence-penalty = 0.5')
+    expect(ini).toContain('frequency-penalty = 0.25')
+  })
+
+  it('omits sampling keys that are absent or non-numeric', async () => {
+    setupModel('s', { temperature: 0.7 })
+    await generatePreset('/p', '/jan', CONFIG, { supportsMtp: false })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('temperature = 0.7')
+    expect(ini).not.toContain('top-p')
+    expect(ini).not.toContain('min-p')
+  })
+
   it('skips out-of-range spec tunables', async () => {
     setupModel('glm', {
       mtp: true,
@@ -104,6 +162,51 @@ describe('generatePreset MTP emission', () => {
     expect(ini).toContain('spec-type = draft-mtp')
     expect(ini).not.toContain('spec-draft-n-max')
     expect(ini).not.toContain('spec-draft-p-min')
+  })
+})
+
+describe('generatePreset parallel reservation', () => {
+  it('adds one reserved background slot on top of the global parallel value', async () => {
+    setupModel('llama', {})
+    await generatePreset('/p', '/jan', { parallel: 1 } as any, {
+      supportsMtp: false,
+    })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('parallel = 2')
+  })
+
+  it('adds one reserved background slot on top of a per-model parallel override', async () => {
+    setupModel('llama', { parallel: 3 })
+    await generatePreset('/p', '/jan', {} as any, { supportsMtp: false })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('parallel = 4')
+  })
+
+  it('omits parallel when unset, leaving llama.cpp auto-default untouched', async () => {
+    setupModel('llama', {})
+    await generatePreset('/p', '/jan', {} as any, { supportsMtp: false })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).not.toContain('parallel =')
+  })
+
+  it('reserves no extra slot when reservedBackgroundSlots is 0 (global)', async () => {
+    setupModel('llama', {})
+    await generatePreset('/p', '/jan', { parallel: 1 } as any, {
+      supportsMtp: false,
+      reservedBackgroundSlots: 0,
+    })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('parallel = 1')
+  })
+
+  it('reserves no extra slot when reservedBackgroundSlots is 0 (per-model)', async () => {
+    setupModel('llama', { parallel: 3 })
+    await generatePreset('/p', '/jan', {} as any, {
+      supportsMtp: false,
+      reservedBackgroundSlots: 0,
+    })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('parallel = 3')
   })
 })
 
@@ -134,5 +237,73 @@ describe('generatePreset ctx-size default', () => {
     })
     const ini = writtenFiles['/p/router.preset.ini']
     expect(ini).not.toContain('ctx-size = 8192')
+  })
+
+  it('honors an explicit ctx_size = 0 as native instead of the 8192 fallback', async () => {
+    setupModel('llama', {})
+    await generatePreset('/p', '/jan', { fit: false, ctx_size: 0 } as any, {
+      supportsMtp: false,
+    })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('ctx-size = 0')
+    expect(ini).not.toContain('ctx-size = 8192')
+  })
+
+  it('honors a per-model ctx_size = 0 override as native', async () => {
+    setupModel('llama', { ctx_size: 0 })
+    await generatePreset('/p', '/jan', { fit: false, ctx_size: 16384 } as any, {
+      supportsMtp: false,
+    })
+    const ini = writtenFiles['/p/router.preset.ini']
+    // [*] keeps the global, but the per-model section overrides to native.
+    expect(ini).toContain('ctx-size = 16384')
+    expect(ini).toContain('ctx-size = 0')
+  })
+})
+
+describe('generatePreset context-shift', () => {
+  it('emits context-shift = true when ctx_shift is enabled', async () => {
+    setupModel('llama', {})
+    await generatePreset('/p', '/jan', { ctx_shift: true } as any, {
+      supportsMtp: false,
+    })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('context-shift = true')
+  })
+
+  it('omits context-shift when disabled, matching llama.cpp own default', async () => {
+    setupModel('llama', {})
+    await generatePreset('/p', '/jan', { ctx_shift: false } as any, {
+      supportsMtp: false,
+    })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).not.toContain('context-shift')
+  })
+})
+
+describe('generatePreset embedding ctx-size', () => {
+  it('pins embedders to native ctx-size = 0 so they do not inherit the global 8192', async () => {
+    setupModel('minilm', { embedding: true })
+    await generatePreset('/p', '/jan', { fit: false } as any, {
+      supportsMtp: false,
+    })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('embeddings = true')
+    // global [*] still emits 8192, but the embedder section overrides to native.
+    expect(ini).toContain('ctx-size = 8192')
+    expect(ini).toContain('ctx-size = 0')
+  })
+
+  it('keeps a positive per-model embedder ctx-size instead of forcing native', async () => {
+    setupModel('minilm', { embedding: true, ctx_size: 2048 })
+    await generatePreset('/p', '/jan', { fit: false } as any, {
+      supportsMtp: false,
+    })
+    const ini = writtenFiles['/p/router.preset.ini']
+    expect(ini).toContain('embeddings = true')
+    expect(ini).toContain('ctx-size = 2048')
+    // the embedder section must not additionally emit native 0.
+    const embedderSection = ini.slice(ini.indexOf('[minilm]'))
+    expect(embedderSection).not.toContain('ctx-size = 0')
   })
 })

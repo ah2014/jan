@@ -60,6 +60,8 @@ import { invoke } from '@tauri-apps/api/core'
 import { SessionInfo } from '@janhq/core'
 import { fetch as httpFetch } from '@tauri-apps/plugin-http'
 import { hasAudioSentinel, splitAudioSentinels } from './audio-sentinel'
+import { hasVideoSentinel, splitVideoSentinels } from './video-sentinel'
+import { filterDefaultSseEvents } from './sseEventTypeFilter'
 import { isPlatformTauri } from '@/lib/platform/utils'
 import { providerRemoteApiKeyChain } from '@/lib/provider-api-keys'
 import {
@@ -82,7 +84,14 @@ interface LlamaCppTimings {
   predicted_n?: number
   predicted_per_second?: number
   prompt_per_second?: number
+  cache_n?: number
 }
+
+// prompt_n only counts tokens freshly processed this turn; tokens served from
+// the KV cache (the rest of the conversation) are reported separately in
+// cache_n, so total prompt/context usage is the sum of both.
+const totalPromptTokens = (timings: LlamaCppTimings): number =>
+  (timings.prompt_n ?? 0) + (timings.cache_n ?? 0)
 
 interface LlamaCppPromptProgress {
   total?: number
@@ -107,7 +116,7 @@ const providerMetadataExtractor: MetadataExtractor = {
     if (body?.timings) {
       return {
         providerMetadata: {
-          promptTokens: body.timings.prompt_n ?? null,
+          promptTokens: totalPromptTokens(body.timings),
           completionTokens: body.timings.predicted_n ?? null,
           tokensPerSecond: body.timings.predicted_per_second ?? null,
           promptPerSecond: body.timings.prompt_per_second ?? null,
@@ -132,6 +141,16 @@ const providerMetadataExtractor: MetadataExtractor = {
         }
         if (chunk?.timings) {
           lastTimings = chunk.timings
+          const liveStats = {
+            promptTokens: totalPromptTokens(lastTimings),
+            completionTokens: lastTimings.predicted_n ?? 0,
+            tokensPerSecond: lastTimings.predicted_per_second ?? null,
+            promptPerSecond: lastTimings.prompt_per_second ?? null,
+          }
+          state.updateLiveTokenStats(liveStats)
+          if (streamThreadId) {
+            state.updateThreadLiveTokenStats(streamThreadId, liveStats)
+          }
         }
         const pp = chunk?.prompt_progress
         if (
@@ -155,7 +174,7 @@ const providerMetadataExtractor: MetadataExtractor = {
         if (lastTimings) {
           return {
             providerMetadata: {
-              promptTokens: lastTimings.prompt_n ?? null,
+              promptTokens: totalPromptTokens(lastTimings),
               completionTokens: lastTimings.predicted_n ?? null,
               tokensPerSecond: lastTimings.predicted_per_second ?? null,
               promptPerSecond: lastTimings.prompt_per_second ?? null,
@@ -344,26 +363,69 @@ export function createCustomFetch(
   baseFetch: typeof globalThis.fetch,
   parameters: Record<string, unknown>,
   keepLlamacppOnly = false,
-  onLlamacppServerError?: () => void
+  onLlamacppServerError?: () => void,
+  filterNamedSseEvents = false
 ): typeof globalThis.fetch {
+  // Params entered via a text input arrive as strings (see InputControl).
+  // Providers reject a string where a number is required, so coerce back to a
+  // number when the param's predefined default is numeric.
+  const coerceNumericParam = (key: string, value: unknown): unknown => {
+    if (typeof value !== 'string') return value
+    const def = paramsSettings[key]
+    if (!def || typeof def.value !== 'number' || value.trim() === '') return value
+    const n = Number(value)
+    return Number.isNaN(n) ? value : n
+  }
+
+  // Internal param keys that don't match the llama-server wire field name.
+  const WIRE_KEY_REMAP: Record<string, string> = {
+    max_output_tokens: 'max_tokens',
+    dynatemp_exp: 'dynatemp_exponent',
+  }
+
+  // Server expects an array of sampler names; the UI stores a comma/
+  // semicolon-separated string for easy editing.
+  const coerceSamplers = (value: unknown): unknown => {
+    if (typeof value !== 'string') return value
+    const names = value
+      .split(/[,;]/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    return names.length > 0 ? names : undefined
+  }
+
   const buildBody = (
     rawBody: Record<string, unknown>,
     includeOurParams: boolean
   ): Record<string, unknown> => {
     if (!includeOurParams) {
       decodeAudioSentinelsInBody(rawBody)
+      decodeVideoSentinelsInBody(rawBody)
       return rawBody
     }
     const normalised: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(parameters)) {
       if (CLIENT_SIDE_PARAM_KEYS.has(key)) continue
       if (!keepLlamacppOnly && LLAMACPP_ONLY_PARAM_KEYS.has(key)) continue
-      const targetKey = key === 'max_output_tokens' ? 'max_tokens' : key
-      normalised[targetKey] = value
+      const targetKey = WIRE_KEY_REMAP[key] ?? key
+      const coerced =
+        key === 'samplers'
+          ? coerceSamplers(value)
+          : coerceNumericParam(key, value)
+      if (coerced === undefined) continue
+      normalised[targetKey] = coerced
     }
     const merged = { ...rawBody, ...normalised }
+    if (keepLlamacppOnly) {
+      // Assert the server default explicitly so a preset/CLI override can't
+      // silently disable prompt-prefix KV reuse across turns.
+      merged.cache_prompt = true
+    }
     if (keepLlamacppOnly && merged.stream === true) {
       merged.return_progress = true
+      // Requests per-chunk timings so the token counter can update live
+      // during generation instead of only once the stream finishes.
+      merged.timings_per_token = true
     }
     // llama-server convention: max_tokens = -1 means "unlimited". Users who
     // set max_output_tokens = 0 in assistant params mean "no cap", not
@@ -373,6 +435,7 @@ export function createCustomFetch(
       merged.max_tokens = -1
     }
     decodeAudioSentinelsInBody(merged)
+    decodeVideoSentinelsInBody(merged)
     return merged
   }
 
@@ -397,7 +460,26 @@ export function createCustomFetch(
       if (!friendly) throw err
       throw new Error(`${friendly} (${requestUrlOf(input)})`)
     }
-    if (res.ok) return res
+    if (res.ok) {
+      // OpenAI-compatible servers may interleave custom named SSE events (e.g.
+      // tool-progress) with chat.completion.chunk data; the AI SDK validates
+      // every data line against the chunk schema, so strip non-default events.
+      // Opt-in only: Anthropic and the OpenAI Responses API use named SSE
+      // events as their protocol, so filtering there blanks the whole stream.
+      const contentType = res.headers.get('content-type') || ''
+      if (
+        filterNamedSseEvents &&
+        res.body &&
+        contentType.includes('text/event-stream')
+      ) {
+        return new Response(filterDefaultSseEvents(res.body), {
+          status: res.status,
+          statusText: res.statusText,
+          headers: res.headers,
+        })
+      }
+      return res
+    }
 
     const isLlamacpp500 = keepLlamacppOnly && res.status === 500
 
@@ -514,6 +596,15 @@ export function stripAssistantReasoningInBody(
   }
 }
 
+/** Reads the per-provider "Strip reasoning from context" checkbox; defaults to true. */
+function shouldStripReasoningFromContext(provider?: ProviderObject): boolean {
+  const setting = provider?.settings?.find(
+    (s) => s.key === 'strip_reasoning_from_context'
+  )
+  const value = setting?.controller_props?.value
+  return typeof value === 'boolean' ? value : true
+}
+
 /** Wraps `inner` to strip reasoning fields from assistant messages before send. */
 function withAssistantReasoningStripped(
   inner: typeof globalThis.fetch
@@ -572,16 +663,68 @@ export function decodeAudioSentinelsInBody(body: Record<string, unknown>): void 
   }
 }
 
-type ApiKeyHeaderMode = 'authorization-bearer' | 'x-api-key'
+// Rewrites any sentinel-bearing text content (planted by
+// CustomChatTransport.encodeVideoAttachments) back into llama-server
+// `input_video` content parts. Mutates `body.messages` in place. Runs after
+// decodeAudioSentinelsInBody, so it also handles content already promoted to
+// an array by the audio pass; the two sentinel markers are disjoint.
+export function decodeVideoSentinelsInBody(body: Record<string, unknown>): void {
+  const messages = body.messages
+  if (!Array.isArray(messages)) return
+  for (const msg of messages) {
+    if (!msg || typeof msg !== 'object') continue
+    const m = msg as { role?: string; content?: unknown }
+    if (m.role !== 'user') continue
+    if (typeof m.content === 'string') {
+      if (!hasVideoSentinel(m.content)) continue
+      const split = splitVideoSentinels(m.content)
+      if (split) m.content = split
+      continue
+    }
+    if (!Array.isArray(m.content)) continue
+    const next: unknown[] = []
+    let touched = false
+    for (const part of m.content) {
+      if (
+        part &&
+        typeof part === 'object' &&
+        (part as { type?: string }).type === 'text' &&
+        typeof (part as { text?: string }).text === 'string' &&
+        hasVideoSentinel((part as { text: string }).text)
+      ) {
+        const split = splitVideoSentinels((part as { text: string }).text)
+        if (split) {
+          next.push(...split)
+          touched = true
+          continue
+        }
+      }
+      next.push(part)
+    }
+    if (touched) m.content = next
+  }
+}
+
+type ApiKeyHeaderMode =
+  | 'authorization-bearer'
+  | 'x-api-key'
+  | 'x-goog-api-key'
 
 /** Retries with the next key when the upstream returns 401, 403, or 429. */
 function createApiKeyRotatingFetch(
   baseFetch: typeof globalThis.fetch,
   apiKeys: string[],
   parameters: Record<string, unknown>,
-  headerMode: ApiKeyHeaderMode
+  headerMode: ApiKeyHeaderMode,
+  filterNamedSseEvents = false
 ): typeof globalThis.fetch {
-  const inner = createCustomFetch(baseFetch, parameters)
+  const inner = createCustomFetch(
+    baseFetch,
+    parameters,
+    false,
+    undefined,
+    filterNamedSseEvents
+  )
   if (apiKeys.length <= 1) {
     return inner
   }
@@ -594,6 +737,8 @@ function createApiKeyRotatingFetch(
       const nextHeaders = new Headers(init?.headers as HeadersInit | undefined)
       if (headerMode === 'authorization-bearer') {
         nextHeaders.set('Authorization', `Bearer ${key}`)
+      } else if (headerMode === 'x-goog-api-key') {
+        nextHeaders.set('x-goog-api-key', key)
       } else {
         nextHeaders.set('x-api-key', key)
       }
@@ -606,6 +751,22 @@ function createApiKeyRotatingFetch(
     }
     throw new Error('API key rotation exhausted')
   }
+}
+
+// An empty apiKey still puts an empty auth header on the wire, which upstreams
+// answer with misleading 401s (e.g. Anthropic's "x-api-key header is
+// required"). Fail here with an actionable message instead.
+function requireRemoteApiKey(
+  provider: ProviderObject,
+  keyChain: string[]
+): string {
+  const key = keyChain[0] ?? provider.api_key?.trim()
+  if (!key) {
+    throw new Error(
+      `No API key configured for ${provider.provider}. Add one in Settings > Model Providers.`
+    )
+  }
+  return key
 }
 
 function getRuntimeFetch(): typeof globalThis.fetch {
@@ -801,12 +962,20 @@ export class ModelFactory {
           })()
         }
       : undefined
-    const customFetch = createCustomFetch(
+    // Reasoning content re-shapes assistant turns (content + sibling
+    // reasoning_content) relative to what llama-server originally streamed
+    // and cached, so stripping it (default on) preserves KV-cache prefix
+    // reuse across turns; some models recommend keeping it, hence the toggle.
+    let customFetch = createCustomFetch(
       httpFetch,
       parameters,
       true,
-      onLlamacppServerError
+      onLlamacppServerError,
+      true
     )
+    if (shouldStripReasoningFromContext(provider)) {
+      customFetch = withAssistantReasoningStripped(customFetch)
+    }
 
     return new OpenAICompatibleChatLanguageModel(modelId, {
       provider: 'llamacpp',
@@ -867,28 +1036,26 @@ export class ModelFactory {
       Origin: 'tauri://localhost',
     }
 
-    // Custom fetch that merges parameters and calls /cancel on abort
-    const customFetch: typeof httpFetch = async (
+    // Share the common fetch (param normalisation + error-body cleaning that
+    // rebuilds upstream errors from buffered text rather than re-decoding the
+    // raw stream) with every other provider, then layer MLX's /cancel-on-abort
+    // on top.
+    let baseCustomFetch = createCustomFetch(
+      httpFetch,
+      parameters,
+      false,
+      undefined,
+      true
+    )
+    if (shouldStripReasoningFromContext(provider)) {
+      baseCustomFetch = withAssistantReasoningStripped(baseCustomFetch)
+    }
+    const customFetch: typeof globalThis.fetch = async (
       input: RequestInfo | URL,
       init?: RequestInit
     ): Promise<Response> => {
-      if (init?.method === 'POST' || !init?.method) {
-        let body: Record<string, unknown> = {}
-        if (init?.body) {
-          try {
-            body = JSON.parse(init.body as string)
-          } catch (e) {
-            throw new Error(
-              `Failed to parse MLX request body as JSON: ${e instanceof Error ? e.message : String(e)}`
-            )
-          }
-        }
-        const mergedBody = { ...body, ...parameters }
-        init = { ...init, body: JSON.stringify(mergedBody) }
-      }
-
       // When the request is aborted, also call the server's /cancel endpoint
-      // to stop MLX inference immediately
+      // to stop MLX inference immediately.
       if (init?.signal) {
         init.signal.addEventListener('abort', () => {
           httpFetch(`${baseUrl}/v1/cancel`, {
@@ -901,7 +1068,7 @@ export class ModelFactory {
         })
       }
 
-      return httpFetch(input, init)
+      return baseCustomFetch(input, init)
     }
 
     const model = new OpenAICompatibleChatLanguageModel(modelId, {
@@ -953,7 +1120,7 @@ export class ModelFactory {
         : createCustomFetch(getInferenceFetch(provider), parameters)
 
     const anthropic = createAnthropic({
-      apiKey: keyChain[0] ?? provider.api_key ?? '',
+      apiKey: requireRemoteApiKey(provider, keyChain),
       baseURL: provider.base_url,
       headers: Object.keys(headers).length > 0 ? headers : undefined,
       fetch: fetchImpl,
@@ -992,13 +1159,18 @@ export class ModelFactory {
         : createCustomFetch(getInferenceFetch(provider), parameters)
 
     const openai = createOpenAI({
-      apiKey: keyChain[0] ?? provider.api_key ?? '',
+      apiKey: requireRemoteApiKey(provider, keyChain),
       baseURL: provider.base_url,
       headers: Object.keys(headers).length > 0 ? headers : undefined,
       fetch: fetchImpl,
     })
 
-    return openai.chat(modelId)
+    // The genuine OpenAI provider always supports the Responses API, so use it
+    // unconditionally: it is a superset of Chat Completions and the only surface
+    // that returns reasoning summaries. Custom OpenAI-compatible providers route
+    // through createOpenAICompatibleModel, not here, so this cannot hit a proxy
+    // that only implements /chat/completions.
+    return openai.responses(modelId)
   }
 
   /**
@@ -1031,7 +1203,7 @@ export class ModelFactory {
         : createCustomFetch(getInferenceFetch(provider), parameters)
 
     const mistral = createMistral({
-      apiKey: keyChain[0] ?? provider.api_key ?? '',
+      apiKey: requireRemoteApiKey(provider, keyChain),
       baseURL: provider.base_url,
       headers: Object.keys(headers).length > 0 ? headers : undefined,
       fetch: fetchImpl,
@@ -1069,7 +1241,7 @@ export class ModelFactory {
         : createCustomFetch(getInferenceFetch(provider), parameters)
 
     const xai = createXai({
-      apiKey: keyChain[0] ?? provider.api_key ?? '',
+      apiKey: requireRemoteApiKey(provider, keyChain),
       baseURL: provider.base_url,
       headers: Object.keys(headers).length > 0 ? headers : undefined,
       fetch: fetchImpl,
@@ -1096,7 +1268,18 @@ export class ModelFactory {
     }
 
     const keyChain = providerRemoteApiKeyChain(provider)
-    const fetchImpl = createCustomFetch(getInferenceFetch(provider), parameters)
+    // Rotate over configured keys on 401/403/429 (e.g. exhausted free-tier
+    // quota). The native Google client authenticates via `x-goog-api-key`, so
+    // the rotating fetch must override that header — not Authorization.
+    const fetchImpl =
+      keyChain.length > 1
+        ? createApiKeyRotatingFetch(
+            getInferenceFetch(provider),
+            keyChain,
+            parameters,
+            'x-goog-api-key'
+          )
+        : createCustomFetch(getInferenceFetch(provider), parameters)
 
     const rawBase = provider.base_url?.trim()
     const baseURL = rawBase
@@ -1104,7 +1287,7 @@ export class ModelFactory {
       : 'https://generativelanguage.googleapis.com/v1beta'
 
     const google = createGoogleGenerativeAI({
-      apiKey: keyChain[0] ?? provider.api_key ?? '',
+      apiKey: requireRemoteApiKey(provider, keyChain),
       baseURL,
       headers: Object.keys(headers).length > 0 ? headers : undefined,
       fetch: fetchImpl,
@@ -1141,9 +1324,10 @@ export class ModelFactory {
             getInferenceFetch(provider),
             keyChain,
             parameters,
-            'authorization-bearer'
+            'authorization-bearer',
+            true
           )
-        : createCustomFetch(getInferenceFetch(provider), parameters)
+        : createCustomFetch(getInferenceFetch(provider), parameters, false, undefined, true)
 
     if (provider.provider === 'groq') {
       fetchImpl = withAssistantReasoningStripped(fetchImpl)

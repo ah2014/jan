@@ -288,12 +288,16 @@ async fn test_get_server_summaries_with_capabilities_in_active_config() {
         );
     }
 
-    // Summaries are derived from the intersection of connected servers and active config.
-    // With no entries in mcp_servers the result should still be empty.
+    // Summaries are derived from enabled (active_servers) config, independent of
+    // live connection state, so a transiently disconnected server still appears
+    // and keeps contributing a stable tool schema.
     let result = get_server_summaries(state).await;
     assert!(result.is_ok());
     let summaries = result.unwrap();
-    assert!(summaries.is_empty(), "No connected servers → no summaries");
+    assert_eq!(summaries.len(), 1, "enabled server appears even when disconnected");
+    assert_eq!(summaries[0].name, "filesystem");
+    assert_eq!(summaries[0].capabilities, vec!["filesystem", "files"]);
+    assert_eq!(summaries[0].description, "Read and write local files");
 }
 
 #[tokio::test]
@@ -318,10 +322,93 @@ async fn test_get_server_summaries_missing_metadata_defaults() {
         );
     }
 
-    // No entries in mcp_servers → summaries list is empty
+    // Enabled server with no metadata still appears, with defaulted fields.
     let result = get_server_summaries(state).await;
     assert!(result.is_ok());
-    assert!(result.unwrap().is_empty());
+    let summaries = result.unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].name, "minimal_server");
+    assert!(summaries[0].capabilities.is_empty());
+    assert_eq!(summaries[0].description, "");
+}
+
+// ============================================================================
+// get_tools last-known-tools fallback tests
+// ============================================================================
+
+#[tokio::test]
+async fn test_get_tools_falls_back_to_last_known_when_server_enabled_but_disconnected() {
+    use super::commands::get_tools;
+    use super::models::ToolWithServer;
+
+    let app = mock_app();
+    let servers_state: SharedMcpServers = Arc::new(Mutex::new(HashMap::new()));
+    app.manage(AppState {
+        mcp_servers: servers_state.clone(),
+        ..Default::default()
+    });
+
+    let state = app.state::<AppState>();
+
+    // Enabled (in active_servers) but not present in mcp_servers — simulates a
+    // transient disconnect of a remote MCP server.
+    {
+        let mut active = state.mcp_active_servers.lock().await;
+        active.insert("exa".to_string(), serde_json::json!({ "type": "http" }));
+    }
+    {
+        let mut last_known = state.mcp_last_known_tools.lock().await;
+        last_known.insert(
+            "exa".to_string(),
+            vec![ToolWithServer {
+                name: "web_search_exa".to_string(),
+                description: Some("search the web".to_string()),
+                input_schema: serde_json::json!({}),
+                server: "exa".to_string(),
+            }],
+        );
+    }
+
+    let result = get_tools(app.handle().clone(), state).await;
+    assert!(result.is_ok());
+    let tools = result.unwrap();
+    assert_eq!(tools.len(), 1, "disconnected-but-enabled server's last-known tools still present");
+    assert_eq!(tools[0].name, "web_search_exa");
+    assert_eq!(tools[0].server, "exa");
+}
+
+#[tokio::test]
+async fn test_get_tools_omits_disabled_server_even_with_stale_last_known_entry() {
+    use super::commands::get_tools;
+    use super::models::ToolWithServer;
+
+    let app = mock_app();
+    let servers_state: SharedMcpServers = Arc::new(Mutex::new(HashMap::new()));
+    app.manage(AppState {
+        mcp_servers: servers_state.clone(),
+        ..Default::default()
+    });
+
+    let state = app.state::<AppState>();
+
+    // Not in active_servers (disabled/never enabled this session) but a stale
+    // last-known entry lingers — must not leak into the tool list.
+    {
+        let mut last_known = state.mcp_last_known_tools.lock().await;
+        last_known.insert(
+            "old_server".to_string(),
+            vec![ToolWithServer {
+                name: "stale_tool".to_string(),
+                description: None,
+                input_schema: serde_json::json!({}),
+                server: "old_server".to_string(),
+            }],
+        );
+    }
+
+    let result = get_tools(app.handle().clone(), state).await;
+    assert!(result.is_ok());
+    assert!(result.unwrap().is_empty(), "disabled server must not contribute stale tools");
 }
 
 // ============================================================================
@@ -790,6 +877,7 @@ fn test_mcp_lock_file_serde_round_trip() {
     use super::lockfile::McpLockFile;
     let lock = McpLockFile {
         pid: 4242,
+        jan_pid: std::process::id(),
         port: 17389,
         server_name: "Jan Browser MCP".to_string(),
         created_at: "2026-01-01T00:00:00+00:00".to_string(),
@@ -838,11 +926,13 @@ fn test_create_read_delete_lock_file_round_trip() {
     // Ensure clean slate
     let _ = delete_lock_file(app.handle(), port);
 
-    create_lock_file(app.handle(), port, "test-server").expect("create_lock_file");
+    let fake_child_pid = std::process::id().wrapping_add(1);
+    create_lock_file(app.handle(), port, "test-server", fake_child_pid).expect("create_lock_file");
     let lock = read_lock_file(app.handle(), port).expect("read_lock_file");
     assert_eq!(lock.port, port);
     assert_eq!(lock.server_name, "test-server");
-    assert_eq!(lock.pid, std::process::id());
+    assert_eq!(lock.pid, fake_child_pid);
+    assert_eq!(lock.jan_pid, std::process::id());
     assert!(!lock.created_at.is_empty());
     assert!(!lock.hostname.is_empty());
 
@@ -886,8 +976,8 @@ async fn test_check_and_cleanup_stale_lock_keeps_live_lock() {
     let app = mock_app();
     let port: u16 = 53_115;
     let _ = delete_lock_file(app.handle(), port);
-    create_lock_file(app.handle(), port, "live").unwrap();
-    // Lock points at the current PID, which is alive → must NOT be removed
+    create_lock_file(app.handle(), port, "live", std::process::id()).unwrap();
+    // Lock pid is the current process (alive) → must NOT be removed
     let cleaned = check_and_cleanup_stale_lock(app.handle(), port).await.unwrap();
     assert!(!cleaned);
     assert!(read_lock_file(app.handle(), port).is_some());
@@ -910,6 +1000,7 @@ async fn test_check_and_cleanup_stale_lock_removes_dead_pid_lock() {
     let dead_pid: u32 = i32::MAX as u32;
     let lock = McpLockFile {
         pid: dead_pid,
+        jan_pid: std::process::id(),
         port,
         server_name: "ghost".to_string(),
         created_at: "2020-01-01T00:00:00+00:00".to_string(),
@@ -937,17 +1028,18 @@ fn test_cleanup_own_locks_removes_only_current_pid_locks() {
     let _ = delete_lock_file(app.handle(), own_port);
     let _ = delete_lock_file(app.handle(), other_port);
 
-    // Lock owned by us
-    create_lock_file(app.handle(), own_port, "ours").unwrap();
+    // Lock owned by us (jan_pid matches current process)
+    let fake_child_pid = std::process::id().wrapping_add(1);
+    create_lock_file(app.handle(), own_port, "ours", fake_child_pid).unwrap();
 
-    // Lock owned by some other PID — write directly into the SAME dir lockfile uses
+    // Lock owned by a different Jan instance — write directly into the SAME dir lockfile uses
     let app_data_dir = app.handle().path().app_data_dir().expect("app data dir");
     std::fs::create_dir_all(&app_data_dir).ok();
     let other_path = app_data_dir.join(format!("mcp_lock_{}.json", other_port));
-    // Pick a PID that is definitely not us (and survives wrap)
-    let foreign_pid = if std::process::id() == 1 { 2 } else { 1 };
+    let foreign_jan_pid = if std::process::id() == 1 { 2 } else { 1 };
     let foreign = McpLockFile {
-        pid: foreign_pid,
+        pid: foreign_jan_pid,
+        jan_pid: foreign_jan_pid,
         port: other_port,
         server_name: "theirs".into(),
         created_at: "2020-01-01T00:00:00+00:00".into(),
@@ -967,4 +1059,40 @@ fn test_cleanup_own_locks_removes_only_current_pid_locks() {
 
     // Cleanup
     let _ = std::fs::remove_file(&other_path);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminate_browser_mcp_reaps_process_group() {
+    use super::helpers::terminate_browser_mcp;
+    use std::os::unix::process::CommandExt;
+    use std::process::Command;
+
+    // Group leader (pgid == pid) that keeps a backgrounded grandchild alive.
+    // killpg must reap the whole group, not just the leader.
+    let mut child = {
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg("sleep 30 & wait");
+        cmd.process_group(0);
+        cmd.spawn().expect("spawn group leader")
+    };
+    let pid = child.id();
+
+    // A port nothing binds → terminate kills the group, finds the port already
+    // free, and returns. (We're the leader's parent, so after the kill it sits as
+    // a zombie until we wait() below.)
+    let free_port = {
+        let l = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let p = l.local_addr().unwrap().port();
+        drop(l);
+        p
+    };
+
+    terminate_browser_mcp(Some(pid), free_port).await;
+
+    let status = child.wait().expect("reap leader");
+    assert!(
+        !status.success(),
+        "group leader should have been signalled, got {status:?}"
+    );
 }

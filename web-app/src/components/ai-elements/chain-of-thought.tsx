@@ -62,6 +62,8 @@ export type ChainOfThoughtProps = ComponentProps<typeof Collapsible> & {
   isStreaming?: boolean
   /** When true the collapsible auto-collapses (e.g. text content appeared after this CoT group). */
   shouldCollapse?: boolean
+  /** When true the collapsible is forced open and overrides auto-collapse (e.g. a tool is awaiting approval). */
+  forceOpen?: boolean
   open?: boolean
   defaultOpen?: boolean
   onOpenChange?: (open: boolean) => void
@@ -71,7 +73,8 @@ export const ChainOfThought = memo(
   ({
     className,
     isStreaming = false,
-    shouldCollapse = false,
+    shouldCollapse,
+    forceOpen = false,
     open,
     defaultOpen = true,
     onOpenChange,
@@ -84,12 +87,17 @@ export const ChainOfThought = memo(
       onChange: onOpenChange,
     })
 
-    // Auto-collapse once text content appears after this CoT group
+    // Follow the caller's open intent. forceOpen pins it open (e.g. a tool
+    // awaiting approval). When shouldCollapse is a boolean, track it two-way so
+    // the trace opens as a step gains content and collapses when it has none or
+    // the answer begins; when undefined the caller isn't controlling collapse,
+    // so defaultOpen / manual toggle is left untouched. Re-applied only on
+    // input change, preserving a manual toggle between changes.
     useEffect(() => {
-      if (shouldCollapse) {
-        setIsOpen(false)
-      }
-    }, [shouldCollapse, setIsOpen])
+      if (forceOpen) setIsOpen(true)
+      else if (shouldCollapse === true) setIsOpen(false)
+      else if (shouldCollapse === false) setIsOpen(true)
+    }, [forceOpen, shouldCollapse, setIsOpen])
 
     const handleOpenChange = (newOpen: boolean) => {
       setIsOpen(newOpen)
@@ -117,7 +125,12 @@ export const ChainOfThought = memo(
     return (
       <ChainOfThoughtContext.Provider value={contextValue}>
         <Collapsible
-          className={cn('not-prose', className)}
+          className={cn(
+            'not-prose rounded-2xl transition-colors',
+            // Card frame only while expanded; collapsed shows a bare summary row.
+            'data-[state=open]:border data-[state=open]:border-border/50 data-[state=open]:bg-main-view-fg/2 data-[state=open]:p-3',
+            className
+          )}
           onOpenChange={handleOpenChange}
           open={isOpen}
           {...props}
@@ -135,10 +148,21 @@ export type ChainOfThoughtHeaderProps = ComponentProps<
   typeof CollapsibleTrigger
 > & {
   title?: string
+  /** Label shown while streaming, e.g. "Working...". Defaults to "Reasoning...". */
+  streamingLabel?: string
+  /** Past-tense verb for the completed state, e.g. "Worked". Defaults to "Thought". */
+  completedVerb?: string
 }
 
 export const ChainOfThoughtHeader = memo(
-  ({ className, title, children, ...props }: ChainOfThoughtHeaderProps) => {
+  ({
+    className,
+    title,
+    streamingLabel = 'Reasoning...',
+    completedVerb = 'Thought',
+    children,
+    ...props
+  }: ChainOfThoughtHeaderProps) => {
     const { isStreaming, isOpen, duration } = useChainOfThought()
 
     return (
@@ -153,13 +177,15 @@ export const ChainOfThoughtHeader = memo(
           <>
             <SparklesIcon className="size-4" />
             {isStreaming || duration === 0 ? (
-              <Shimmer duration={1}>Reasoning...</Shimmer>
+              <Shimmer duration={1}>{streamingLabel}</Shimmer>
             ) : title ? (
               <p>{title}</p>
             ) : duration === undefined ? (
-              <p>Thought for a few seconds</p>
+              <p>{completedVerb} for a few seconds</p>
             ) : (
-              <p>Thought for {duration} seconds</p>
+              <p>
+                {completedVerb} for {duration} seconds
+              </p>
             )}
             <ChevronDownIcon
               className={cn(
@@ -190,9 +216,7 @@ export const ChainOfThoughtContent = memo(
       )}
       {...props}
     >
-      <div className="ml-2 pl-4 border-l-2 border-dotted space-y-3">
-        {children}
-      </div>
+      <div className="space-y-3">{children}</div>
     </CollapsibleContent>
   )
 )

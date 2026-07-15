@@ -20,11 +20,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
+use std::convert::Infallible;
+
 use futures_util::StreamExt;
-use hyper::body::HttpBody;
+use http_body_util::combinators::BoxBody;
+use http_body_util::{BodyExt, Empty, Full, StreamBody};
+use hyper::body::{Bytes, Frame, Incoming};
 use hyper::header::{CONTENT_TYPE, SET_COOKIE};
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use hyper::server::conn::http1;
+use hyper::service::service_fn;
+use hyper::{Method, Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
 use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex;
 
@@ -70,6 +76,34 @@ pub struct WebCtx {
 
 const JSON: &str = "application/json";
 
+/// Boxed response body used by every handler (hyper 1.x has no single `Body`).
+type WebBody = BoxBody<Bytes, Infallible>;
+
+fn full(chunk: impl Into<Bytes>) -> WebBody {
+    Full::new(chunk.into()).boxed()
+}
+
+fn empty() -> WebBody {
+    Empty::<Bytes>::new().boxed()
+}
+
+/// hyper 1.0 dropped `Body::channel`; this mpsc-backed `StreamBody` restores a
+/// sender handle for the streaming/passthrough paths. `send_data` returns
+/// `Result<(), ()>` so existing `.is_err()` disconnect checks compile unchanged.
+struct BodySender(tokio::sync::mpsc::Sender<Result<Frame<Bytes>, Infallible>>);
+
+impl BodySender {
+    async fn send_data(&mut self, data: Bytes) -> Result<(), ()> {
+        self.0.send(Ok(Frame::data(data))).await.map_err(|_| ())
+    }
+}
+
+fn body_channel() -> (BodySender, WebBody) {
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Frame<Bytes>, Infallible>>(32);
+    let body = BodyExt::boxed(StreamBody::new(tokio_stream::wrappers::ReceiverStream::new(rx)));
+    (BodySender(tx), body)
+}
+
 #[derive(serde::Deserialize)]
 struct InvokeRequest {
     route: String,
@@ -93,18 +127,8 @@ pub async fn start_web_server(
         .parse()
         .map_err(|e| format!("Invalid web server address: {e}"))?;
 
-    let make_svc = make_service_fn(move |_conn| {
-        let ctx = ctx.clone();
-        async move {
-            Ok::<_, std::convert::Infallible>(service_fn(move |req| {
-                let ctx = ctx.clone();
-                handle_request(req, ctx)
-            }))
-        }
-    });
-
-    let server = match Server::try_bind(&addr) {
-        Ok(b) => b.serve(make_svc),
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
         Err(e) => {
             log::error!("Failed to bind web server to {addr}: {e}");
             return Err(Box::new(e));
@@ -113,11 +137,28 @@ pub async fn start_web_server(
     log::info!("Jan web server started on http://{addr}");
 
     let task = tokio::spawn(async move {
-        if let Err(e) = server.await {
-            log::error!("Web server error: {e}");
-            return Err(Box::new(e) as Box<dyn std::error::Error + Send + Sync>);
+        loop {
+            let (stream, _) = match listener.accept().await {
+                Ok(c) => c,
+                Err(e) => {
+                    log::error!("Web server accept error: {e}");
+                    continue;
+                }
+            };
+            let io = TokioIo::new(stream);
+            let ctx = ctx.clone();
+            let svc = service_fn(move |req| {
+                let ctx = ctx.clone();
+                handle_request(req, ctx)
+            });
+            tokio::spawn(async move {
+                if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {
+                    log::debug!("Web server connection error: {e}");
+                }
+            });
         }
-        Ok(())
+        #[allow(unreachable_code)]
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
     });
 
     *guard = Some(task);
@@ -136,15 +177,15 @@ pub async fn stop_web_server(
     Ok(())
 }
 
-fn json_response(status: StatusCode, body: &serde_json::Value) -> Response<Body> {
+fn json_response(status: StatusCode, body: &serde_json::Value) -> Response<WebBody> {
     Response::builder()
         .status(status)
         .header(CONTENT_TYPE, JSON)
-        .body(Body::from(body.to_string()))
+        .body(full(body.to_string()))
         .unwrap()
 }
 
-fn err_response(status: StatusCode, message: &str) -> Response<Body> {
+fn err_response(status: StatusCode, message: &str) -> Response<WebBody> {
     json_response(
         status,
         &serde_json::json!({ "error": message }),
@@ -152,7 +193,7 @@ fn err_response(status: StatusCode, message: &str) -> Response<Body> {
 }
 
 /// Is this request authenticated?
-async fn is_authed(req: &Request<Body>, password_hash: &Arc<Mutex<Option<String>>>) -> bool {
+async fn is_authed(req: &Request<Incoming>, password_hash: &Arc<Mutex<Option<String>>>) -> bool {
     let hash_guard = password_hash.lock().await;
     let hash = match hash_guard.as_deref() {
         Some(h) if !h.is_empty() => h,
@@ -168,7 +209,7 @@ async fn is_authed(req: &Request<Body>, password_hash: &Arc<Mutex<Option<String>
     }
 }
 
-async fn handle_request(req: Request<Body>, ctx: WebCtx) -> Result<Response<Body>, std::convert::Infallible> {
+async fn handle_request(req: Request<Incoming>, ctx: WebCtx) -> Result<Response<WebBody>, std::convert::Infallible> {
     let method = req.method().clone();
     let path = req.uri().path().to_string();
 
@@ -180,7 +221,7 @@ async fn handle_request(req: Request<Body>, ctx: WebCtx) -> Result<Response<Body
         return Ok(Response::builder()
             .status(StatusCode::NO_CONTENT)
             .header(SET_COOKIE, clear_cookie())
-            .body(Body::empty())
+            .body(empty())
             .unwrap());
     }
     if path == "/api/auth/check" && method == Method::GET {
@@ -220,7 +261,7 @@ async fn handle_request(req: Request<Body>, ctx: WebCtx) -> Result<Response<Body
     Ok(err_response(StatusCode::METHOD_NOT_ALLOWED, "Method not allowed"))
 }
 
-async fn handle_login(req: Request<Body>, ctx: &WebCtx) -> Response<Body> {
+async fn handle_login(req: Request<Incoming>, ctx: &WebCtx) -> Response<WebBody> {
     let body = match read_body(req).await {
         Ok(b) => b,
         Err(e) => return err_response(StatusCode::BAD_REQUEST, &e),
@@ -251,14 +292,14 @@ async fn handle_login(req: Request<Body>, ctx: &WebCtx) -> Response<Body> {
         .status(StatusCode::OK)
         .header(SET_COOKIE, session_cookie(&token, super::auth::SESSION_TTL_SECS))
         .header(CONTENT_TYPE, JSON)
-        .body(Body::from(serde_json::json!({ "ok": true }).to_string()))
+        .body(full(serde_json::json!({ "ok": true }).to_string()))
         .unwrap()
 }
 
 /// The `/api/invoke` dispatcher: `{ route, args }` -> result of the matching
 /// command. Mirrors Tauri's `invoke()` so the web `core.api` shim can stay
 /// a thin wrapper.
-async fn handle_invoke(req: Request<Body>, ctx: &WebCtx) -> Response<Body> {
+async fn handle_invoke(req: Request<Incoming>, ctx: &WebCtx) -> Response<WebBody> {
     let body = match read_body(req).await {
         Ok(b) => b,
         Err(e) => return err_response(StatusCode::BAD_REQUEST, &e),
@@ -278,14 +319,14 @@ async fn handle_invoke(req: Request<Body>, ctx: &WebCtx) -> Response<Body> {
 }
 
 /// Pull the full request body into a `Vec<u8>`.
-async fn read_body(req: Request<Body>) -> Result<Vec<u8>, String> {
-    let mut body = req.into_body();
-    let mut buf = Vec::new();
-    while let Some(chunk) = body.data().await {
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        buf.extend_from_slice(&chunk);
-    }
-    Ok(buf)
+async fn read_body(req: Request<Incoming>) -> Result<Vec<u8>, String> {
+    let body = req.into_body();
+    let bytes = body
+        .collect()
+        .await
+        .map_err(|e| e.to_string())?
+        .to_bytes();
+    Ok(bytes.to_vec())
 }
 
 // --- Argument helpers --------------------------------------------------------
@@ -653,13 +694,13 @@ fn proxy_cors(builder: hyper::http::response::Builder) -> hyper::http::response:
 /// Look up the provider, validate the target URL, and forward the request,
 /// streaming the response back. Honours the provider's API-key chain (rotating
 /// on 401/403/429) and custom headers, all server-side.
-async fn handle_proxy(req: Request<Body>, ctx: &WebCtx) -> Response<Body> {
+async fn handle_proxy(req: Request<Incoming>, ctx: &WebCtx) -> Response<WebBody> {
     let method = req.method().clone();
 
     // CORS preflight.
     if method == Method::OPTIONS {
         return proxy_cors(Response::builder().status(StatusCode::NO_CONTENT))
-            .body(Body::empty())
+            .body(empty())
             .unwrap();
     }
 
@@ -805,7 +846,7 @@ async fn handle_proxy(req: Request<Body>, ctx: &WebCtx) -> Response<Body> {
 
         // Stream the upstream body straight to the client. `bytes_stream()` works
         // for both SSE (`text/event-stream`) and buffered JSON responses.
-        let (mut sender, body) = Body::channel();
+        let (mut sender, body) = body_channel();
         let mut stream = upstream.bytes_stream();
         tokio::spawn(async move {
             while let Some(chunk) = stream.next().await {
@@ -847,7 +888,7 @@ fn http_status_indicates_api_key_retry(status: reqwest::StatusCode) -> bool {
 
 // --- Static file serving -----------------------------------------------------
 
-fn serve_static(ui_root: &Path, request_path: &str) -> Response<Body> {
+fn serve_static(ui_root: &Path, request_path: &str) -> Response<WebBody> {
     // Canonicalize the UI root once so the containment check is reliable
     // (otherwise an absolute canonicalized target won't `starts_with` a
     // relative root). If the root doesn't exist (UI not built yet), keep the
@@ -892,7 +933,7 @@ fn serve_static(ui_root: &Path, request_path: &str) -> Response<Body> {
         Ok(bytes) => Response::builder()
             .status(StatusCode::OK)
             .header(CONTENT_TYPE, mime)
-            .body(Body::from(bytes))
+            .body(full(bytes))
             .unwrap(),
         Err(_) => err_response(StatusCode::NOT_FOUND, "File not found"),
     }

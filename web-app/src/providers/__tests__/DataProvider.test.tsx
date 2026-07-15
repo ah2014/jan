@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 const h = vi.hoisted(() => {
   return {
     setProviders: vi.fn(),
+    updateProvider: vi.fn(),
     getProviderByName: vi.fn(),
     providers: [] as Array<Record<string, unknown>>,
     checkForUpdate: vi.fn(),
@@ -15,6 +16,8 @@ const h = vi.hoisted(() => {
     setSettings: vi.fn(),
     setAssistants: vi.fn(),
     setThreads: vi.fn(),
+    threadsInStore: {} as Record<string, unknown>,
+    registrationListeners: new Set<() => void>(),
     setLastServerModels: vi.fn(),
     setServerPort: vi.fn(),
     setServerStatus: vi.fn(),
@@ -24,6 +27,7 @@ const h = vi.hoisted(() => {
     providerHasRemoteApiKeys: vi.fn().mockReturnValue(true),
     providerRemoteApiKeyChain: vi.fn().mockReturnValue(['key-1']),
     eventsOn: vi.fn(),
+    eventsOff: vi.fn(),
     localApi: {
       enableOnStartup: false,
       serverHost: '127.0.0.1',
@@ -45,8 +49,14 @@ vi.mock('@/hooks/useModelProvider', () => {
   const useModelProvider = vi.fn(() => ({
     setProviders: h.setProviders,
     getProviderByName: h.getProviderByName,
-  })) as unknown as { (): unknown; getState: () => { providers: unknown[] } }
-  useModelProvider.getState = () => ({ providers: h.providers })
+  })) as unknown as {
+    (): unknown
+    getState: () => { providers: unknown[]; updateProvider: () => void }
+  }
+  useModelProvider.getState = () => ({
+    providers: h.providers,
+    updateProvider: h.updateProvider,
+  })
   return { useModelProvider }
 })
 
@@ -63,9 +73,25 @@ vi.mock('@/hooks/useAssistant', () => ({
   useAssistant: () => ({ setAssistants: h.setAssistants }),
 }))
 
-vi.mock('@/hooks/useThreads', () => ({
-  useThreads: () => ({ setThreads: h.setThreads }),
+vi.mock('@/lib/extension', () => ({
+  ExtensionManager: {
+    getInstance: () => ({
+      onRegistrationChange: (cb: () => void) => {
+        h.registrationListeners.add(cb)
+        return () => h.registrationListeners.delete(cb)
+      },
+    }),
+  },
 }))
+
+vi.mock('@/hooks/useThreads', () => {
+  const useThreads = vi.fn(() => ({ setThreads: h.setThreads })) as unknown as {
+    (): unknown
+    getState: () => { threads: Record<string, unknown> }
+  }
+  useThreads.getState = () => ({ threads: h.threadsInStore })
+  return { useThreads }
+})
 
 vi.mock('@/hooks/useLocalApiServer', () => ({
   useLocalApiServer: () => ({
@@ -99,7 +125,10 @@ vi.mock('@tauri-apps/api/core', () => ({
 
 vi.mock('@janhq/core', () => ({
   AppEvent: { onModelImported: 'onModelImported' },
-  events: { on: (...a: unknown[]) => h.eventsOn(...a) },
+  events: {
+    on: (...a: unknown[]) => h.eventsOn(...a),
+    off: (...a: unknown[]) => h.eventsOff(...a),
+  },
 }))
 
 vi.mock('@/types/events', () => ({
@@ -114,7 +143,7 @@ vi.mock('@/constants/routes', () => ({
 const hubState = vi.hoisted(() => ({
   unsubscribe: vi.fn(),
   deeplinkGetCurrent: vi.fn().mockResolvedValue(null),
-  deeplinkOnOpenUrl: vi.fn().mockResolvedValue(undefined),
+  deeplinkOnOpenUrl: vi.fn().mockResolvedValue(vi.fn()),
   eventsListen: vi.fn(),
   getProviders: vi.fn().mockResolvedValue([]),
   getMCPConfig: vi.fn().mockResolvedValue({ mcpServers: { a: 1 }, mcpSettings: { s: 1 } }),
@@ -169,14 +198,18 @@ const resetHubState = () => {
   hubState.startServer.mockResolvedValue(1337)
   hubState.startModel.mockResolvedValue(undefined)
   hubState.deeplinkGetCurrent.mockResolvedValue(null)
+  hubState.deeplinkOnOpenUrl.mockResolvedValue(vi.fn())
 }
 
 describe('DataProvider', () => {
   const originalWindowCore = (window as unknown as { core?: unknown }).core
 
   beforeEach(() => {
+    vi.clearAllMocks()
     resetHubState()
     h.providers = []
+    h.threadsInStore = {}
+    h.registrationListeners.clear()
     h.isDev.mockReturnValue(false)
     h.providerHasRemoteApiKeys.mockReturnValue(true)
     h.providerRemoteApiKeyChain.mockReturnValue(['key-1'])
@@ -225,6 +258,74 @@ describe('DataProvider', () => {
     })
   })
 
+  it('retries fetchThreads when it throws (extension not ready) and never wipes the list on failure', async () => {
+    hubState.fetchThreads
+      .mockRejectedValueOnce(new Error('Conversational extension not available yet'))
+      .mockResolvedValueOnce([{ id: 't1' }])
+
+    render(<DataProvider />)
+
+    await waitFor(() => {
+      expect(hubState.fetchThreads).toHaveBeenCalledTimes(2)
+    })
+    // The failed first attempt must not push an empty array.
+    expect(h.setThreads).not.toHaveBeenCalledWith([])
+    await waitFor(() => {
+      expect(h.setThreads).toHaveBeenCalledWith([{ id: 't1' }])
+    })
+  })
+
+  it('does not wipe a populated thread list when fetchThreads resolves empty', async () => {
+    h.threadsInStore = { t1: { id: 't1' } }
+    hubState.fetchThreads.mockResolvedValue([])
+
+    render(<DataProvider />)
+
+    await waitFor(() => {
+      expect(hubState.fetchThreads).toHaveBeenCalled()
+    })
+    expect(h.setThreads).not.toHaveBeenCalled()
+  })
+
+  it('writes an empty thread list when the store is also empty', async () => {
+    hubState.fetchThreads.mockResolvedValue([])
+
+    render(<DataProvider />)
+
+    await waitFor(() => {
+      expect(h.setThreads).toHaveBeenCalledWith([])
+    })
+  })
+
+  it('refetches threads when an extension registers after retries are exhausted', async () => {
+    vi.useFakeTimers()
+    try {
+      hubState.fetchThreads.mockRejectedValue(new Error('not ready'))
+
+      const { unmount } = render(<DataProvider />)
+
+      // 1 initial attempt + 20 bounded retries (backoff capped at 1s).
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30000)
+      })
+      expect(hubState.fetchThreads).toHaveBeenCalledTimes(21)
+      expect(h.setThreads).not.toHaveBeenCalled()
+
+      // A late extension registration re-arms the fetch.
+      hubState.fetchThreads.mockResolvedValue([{ id: 't1' }])
+      await act(async () => {
+        h.registrationListeners.forEach((cb) => cb())
+      })
+      expect(hubState.fetchThreads).toHaveBeenCalledTimes(22)
+      expect(h.setThreads).toHaveBeenCalledWith([{ id: 't1' }])
+
+      unmount()
+      expect(h.registrationListeners.size).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('passes DEFAULT_MCP_SETTINGS when mcp config lacks values', async () => {
     hubState.getMCPConfig.mockResolvedValue({})
     render(<DataProvider />)
@@ -269,7 +370,7 @@ describe('DataProvider', () => {
   })
 
   it('registers remote providers with the backend for active providers', async () => {
-    hubState.getProviders.mockResolvedValue([
+    const fetched = [
       {
         provider: 'openai',
         active: true,
@@ -283,7 +384,10 @@ describe('DataProvider', () => {
         models: [],
         custom_header: [],
       },
-    ])
+    ]
+    hubState.getProviders.mockResolvedValue(fetched)
+    // Registration reads the store after setProviders merges the fetched list.
+    h.providers = fetched
     render(<DataProvider />)
     await waitFor(() => {
       expect(h.invoke).toHaveBeenCalledWith(
@@ -320,9 +424,11 @@ describe('DataProvider', () => {
   it('logs provider registration failures without throwing', async () => {
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
     h.invoke.mockRejectedValue(new Error('nope'))
-    hubState.getProviders.mockResolvedValue([
+    const fetched = [
       { provider: 'openai', active: true, models: [], custom_header: [] },
-    ])
+    ]
+    hubState.getProviders.mockResolvedValue(fetched)
+    h.providers = fetched
     render(<DataProvider />)
     await waitFor(() => {
       expect(err).toHaveBeenCalledWith(

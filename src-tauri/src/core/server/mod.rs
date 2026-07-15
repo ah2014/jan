@@ -1,5 +1,7 @@
 pub mod attach_paths_store;
 pub mod commands;
+pub mod converters;
+pub mod provider_secrets;
 pub mod proxy;
 pub mod provider_store;
 pub mod remote_provider_commands;
