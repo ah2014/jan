@@ -20,6 +20,7 @@ import { SystemEvent } from '@/types/events'
 import { isDev } from '@/lib/utils'
 import { invoke } from '@tauri-apps/api/core'
 import { providerHasRemoteApiKeys, providerRemoteApiKeyChain } from '@/lib/provider-api-keys'
+import { isPlatformTauri } from '@/lib/platform'
 
 type ProviderCustomHeader = {
   header: string
@@ -101,6 +102,11 @@ async function seedProviderKeysFromKeyring(
 // providers, so custom providers would otherwise stay keyless after a reload).
 // Applies via updateProvider so it merges over the already-hydrated state.
 async function applyKeyringKeys(): Promise<void> {
+  // Keyring seeding is desktop-only: on web the server holds the provider keys
+  // (providers.json) and applies them during the server-side /api/proxy, so the
+  // client never needs them. Also, `invoke` here is the Tauri bridge, which is
+  // absent in a browser.
+  if (!isPlatformTauri()) return
   const store = useModelProvider.getState()
   const seeded = await seedProviderKeysFromKeyring(store.providers)
   for (const p of seeded) {
@@ -119,6 +125,12 @@ let registeredProviderNames = new Set<string>()
 
 // Effect to sync remote providers when providers change
 const syncRemoteProviders = () => {
+  // Desktop-only: this pushes the GUI's in-memory provider state into the
+  // backend via the Tauri command. On web the server's providers.json is
+  // authoritative (written via the /api/invoke shim when the user edits a
+  // provider), so re-registering here would only clobber keys with the redacted
+  // web-side copies. The Tauri `invoke` is also unavailable in a browser.
+  if (!isPlatformTauri()) return
   const providers = useModelProvider.getState().providers
   const currentActive = new Set<string>()
 
@@ -156,6 +168,9 @@ const MLX_SAMPLING_KEY_MAP: Record<string, string> = {
 // that omit these params inherit the GUI-configured values (overridable
 // per-request). Replaces the whole map, so an empty push clears stale entries.
 const syncModelParamDefaults = () => {
+  // MLX is a macOS-only local backend; the web client never has one. The Tauri
+  // `invoke` is also unavailable in a browser.
+  if (!isPlatformTauri()) return
   const providers = useModelProvider.getState().providers
   const defaults: Record<string, Record<string, number>> = {}
 
@@ -213,22 +228,29 @@ export function DataProvider() {
       // Seed keyring keys into the merged store (predefined + engine + custom).
       await applyKeyringKeys()
       // Register active remote providers with the backend, keys now in place.
-      useModelProvider.getState().providers.forEach((provider) => {
-        if (provider.active) {
-          registerRemoteProvider(provider)
-          registeredProviderNames.add(provider.provider)
-        }
-      })
+      // Desktop-only: on web the server's providers.json is authoritative and
+      // the Tauri invoke is unavailable.
+      if (isPlatformTauri()) {
+        useModelProvider.getState().providers.forEach((provider) => {
+          if (provider.active) {
+            registerRemoteProvider(provider)
+            registeredProviderNames.add(provider.provider)
+          }
+        })
+      }
     })
     // Re-seed the Hugging Face token from the keyring (no longer persisted to
     // settings storage) into the store + download extension for this session.
-    invoke<string | null>('get_secret', {
-      key: HUGGINGFACE_TOKEN_SECRET_KEY,
-    })
-      .then((token) => {
-        if (token) useGeneralSetting.getState().setHuggingfaceToken(token)
+    // Desktop-only (keyring); silently skipped on web.
+    if (isPlatformTauri()) {
+      invoke<string | null>('get_secret', {
+        key: HUGGINGFACE_TOKEN_SECRET_KEY,
       })
-      .catch(() => {})
+        .then((token) => {
+          if (token) useGeneralSetting.getState().setHuggingfaceToken(token)
+        })
+        .catch(() => {})
+    }
     serviceHub
       .mcp()
       .getMCPConfig()
