@@ -75,6 +75,8 @@ import {
   getProviderApiType,
 } from '@/lib/providerCaps'
 import { useAppState } from '@/hooks/useAppState'
+import { useGeneralSetting } from '@/hooks/useGeneralSetting'
+import { ensureAnthropicHeaders } from '@/lib/remoteModelCatalog'
 
 /**
  * Llama.cpp timings structure from the response
@@ -596,13 +598,35 @@ export function stripAssistantReasoningInBody(
   }
 }
 
-/** Reads the per-provider "Strip reasoning from context" checkbox; defaults to true. */
-function shouldStripReasoningFromContext(provider?: ProviderObject): boolean {
-  const setting = provider?.settings?.find(
-    (s) => s.key === 'strip_reasoning_from_context'
+/** Reads the global "Strip reasoning from context" toggle; defaults to false. */
+function shouldStripReasoningFromContext(): boolean {
+  return useGeneralSetting.getState().stripReasoningFromContext === true
+}
+
+/**
+ * A local llama.cpp model "preserves reasoning" when its chat template accepts
+ * a `preserve_thinking` kwarg that is on (user-set value, else the GGUF-detected
+ * default). Such templates re-emit prior `<think>` from the resent
+ * `reasoning_content`, so stripping that field would shrink earlier assistant
+ * turns and force llama.cpp to reprocess the KV-cache prefix. When true, the
+ * reasoning must be resent even if the global strip toggle is on.
+ */
+export function modelPreservesReasoning(
+  provider: ProviderObject | undefined,
+  modelId: string
+): boolean {
+  const model = provider?.models?.find((m) => m.id === modelId)
+  if (!model) return false
+  const raw: unknown =
+    model.settings?.chat_template_kwargs?.controller_props?.value
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const v = (raw as Record<string, unknown>).preserve_thinking
+    if (typeof v === 'boolean') return v
+  }
+  return (
+    model.template_kwargs?.find((k) => k.name === 'preserve_thinking')
+      ?.default === true
   )
-  const value = setting?.controller_props?.value
-  return typeof value === 'boolean' ? value : true
 }
 
 /** Wraps `inner` to strip reasoning fields from assistant messages before send. */
@@ -962,10 +986,9 @@ export class ModelFactory {
           })()
         }
       : undefined
-    // Reasoning content re-shapes assistant turns (content + sibling
-    // reasoning_content) relative to what llama-server originally streamed
-    // and cached, so stripping it (default on) preserves KV-cache prefix
-    // reuse across turns; some models recommend keeping it, hence the toggle.
+    // The global toggle can strip reasoning_content from resent assistant turns,
+    // but never for a preserve_thinking model: its template re-emits prior
+    // <think> from that field, so stripping it would diverge the KV-cache prefix.
     let customFetch = createCustomFetch(
       httpFetch,
       parameters,
@@ -973,7 +996,10 @@ export class ModelFactory {
       onLlamacppServerError,
       true
     )
-    if (shouldStripReasoningFromContext(provider)) {
+    if (
+      shouldStripReasoningFromContext() &&
+      !modelPreservesReasoning(provider, modelId)
+    ) {
       customFetch = withAssistantReasoningStripped(customFetch)
     }
 
@@ -1047,7 +1073,7 @@ export class ModelFactory {
       undefined,
       true
     )
-    if (shouldStripReasoningFromContext(provider)) {
+    if (shouldStripReasoningFromContext()) {
       baseCustomFetch = withAssistantReasoningStripped(baseCustomFetch)
     }
     const customFetch: typeof globalThis.fetch = async (
@@ -1101,12 +1127,14 @@ export class ModelFactory {
   ): LanguageModel {
     const headers: Record<string, string> = {}
 
-    // Add custom headers if specified (e.g., anthropic-version)
     if (provider.custom_header) {
       provider.custom_header.forEach((customHeader) => {
         headers[customHeader.header] = customHeader.value
       })
     }
+    // Custom Anthropic providers may ship no custom_header; Anthropic rejects
+    // browser-context requests (webview Origin) without the opt-in header.
+    ensureAnthropicHeaders(provider, headers)
 
     const keyChain = providerRemoteApiKeyChain(provider)
     const fetchImpl =
@@ -1329,7 +1357,9 @@ export class ModelFactory {
           )
         : createCustomFetch(getInferenceFetch(provider), parameters, false, undefined, true)
 
-    if (provider.provider === 'groq') {
+    // Groq's API rejects assistant `reasoning` fields, so it always strips
+    // regardless of the toggle; other providers honor the global setting.
+    if (provider.provider === 'groq' || shouldStripReasoningFromContext()) {
       fetchImpl = withAssistantReasoningStripped(fetchImpl)
     }
 

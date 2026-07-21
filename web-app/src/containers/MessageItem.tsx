@@ -18,17 +18,20 @@ import {
   ToolOutput,
 } from '@/components/ai-elements/tool'
 import { CopyButton } from './CopyButton'
+import { useTranslation } from '@/i18n/react-i18next-compat'
 import { formatDate } from '@/utils/formatDate'
 import { useModelProvider } from '@/hooks/useModelProvider'
 import { useInterfaceSettings } from '@/hooks/useInterfaceSettings'
 import { useMessageErrors } from '@/stores/message-errors'
 import {
   IconRefresh,
+  IconPlayerPlay,
   IconPaperclip,
   IconArrowDown,
   IconAlertTriangle,
   IconChevronLeft,
   IconChevronRight,
+  IconCircleCheck,
 } from '@tabler/icons-react'
 import { EditMessageDialog } from '@/containers/dialogs/EditMessageDialog'
 import { DeleteMessageDialog } from '@/containers/dialogs/DeleteMessageDialog'
@@ -40,8 +43,10 @@ import { PromptProgress } from '@/components/PromptProgress'
 import { useServiceHub } from '@/hooks/useServiceHub'
 import { useToolApprovalRequests } from '@/hooks/useToolApprovalRequests'
 import { parseCitationsFromToolOutput } from '@/lib/citation-parser'
-import type { RagCitation } from '@/components/Citations'
+import type { RagCitation, WebCitation } from '@/components/Citations'
 import { useGroundingStore } from '@/stores/grounding-store'
+import { useWebCitationStore } from '@/stores/web-citation-store'
+import { WebSourcesRow } from '@/components/WebSourcesRow'
 import { injectCitationMarkers } from '@/lib/grounding'
 import {
   ReasoningActiveStep,
@@ -60,6 +65,14 @@ const CONTENT_TYPE = {
   REASONING: 'reasoning',
 } as const
 
+// Turn a tool identifier (e.g. "web_search", "exa_search") into a readable
+// label for the streaming step header (e.g. "Web search").
+function humanizeToolName(name: string): string {
+  const spaced = name.replace(/[_-]+/g, ' ').trim()
+  if (!spaced) return 'tool'
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+}
+
 export type MessageItemProps = {
   message: UIMessage
   isFirstMessage: boolean
@@ -70,6 +83,7 @@ export type MessageItemProps = {
   onReasoningScroll?: () => void
   onReasoningScrollToBottom?: () => void
   onRegenerate?: (messageId: string) => void
+  onContinue?: (messageId: string) => void
   onEdit?: (messageId: string, newText: string, keptImages: string[]) => void
   onDelete?: (messageId: string) => void
   versionInfo?: { index: number; count: number }
@@ -93,11 +107,13 @@ export const MessageItem = memo(
     onReasoningScroll,
     onReasoningScrollToBottom,
     onRegenerate,
+    onContinue,
     onEdit,
     onDelete,
     versionInfo,
     onSwitchVersion,
   }: MessageItemProps) => {
+    const { t } = useTranslation()
     const selectedModel = useModelProvider((state) => state.selectedModel)
     const coloredUserBubble = useInterfaceSettings((s) => s.coloredUserBubble)
     const metadata = message.metadata as Record<string, unknown> | undefined
@@ -112,6 +128,12 @@ export const MessageItem = memo(
     const handleRegenerate = useCallback(() => {
       onRegenerate?.(message.id)
     }, [onRegenerate, message.id])
+
+    const handleContinue = useCallback(() => {
+      onContinue?.(message.id)
+    }, [onContinue, message.id])
+
+    const isStopped = metadata?.stopped === true
 
     const handleEdit = useCallback(
       (newText: string, keptImages: string[]) => {
@@ -171,8 +193,9 @@ export const MessageItem = memo(
     // Aggregate RAG citations in part order and record each rag tool part's
     // base offset, so its card numbers/anchors continue the same global
     // sequence the inline superscript markers use.
-    const { ragCitations, citationOffsets } = useMemo(() => {
+    const { ragCitations, citationOffsets, webCitations } = useMemo(() => {
       const out: RagCitation[] = []
+      const web: WebCitation[] = []
       const offsets = new Map<number, number>()
       if (message.role === 'assistant') {
         const parts = message.parts as any[]
@@ -184,10 +207,12 @@ export const MessageItem = memo(
           if (parsed?.kind === 'rag') {
             offsets.set(i, out.length)
             out.push(...parsed.citations)
+          } else if (parsed?.kind === 'web') {
+            web.push(...parsed.citations)
           }
         }
       }
-      return { ragCitations: out, citationOffsets: offsets }
+      return { ragCitations: out, citationOffsets: offsets, webCitations: web }
     }, [message.parts, message.role])
 
     const serviceHub = useServiceHub()
@@ -221,6 +246,12 @@ export const MessageItem = memo(
       ensureGrounding,
       serviceHub,
     ])
+
+    const setWebCitations = useWebCitationStore((s) => s.setForMessage)
+    useEffect(() => {
+      if (!webCitations.length) return
+      setWebCitations(message.id, webCitations)
+    }, [webCitations, message.id, setWebCitations])
 
     // Extract file metadata from message text (for user messages with attachments)
     const attachedFiles = useMemo(() => {
@@ -508,6 +539,15 @@ export const MessageItem = memo(
         meaningful.length > 0 &&
         meaningful[meaningful.length - 1].part.type.startsWith('tool-')
 
+      const currentToolLabel = currentStepIsTool
+        ? humanizeToolName(
+            meaningful[meaningful.length - 1].part.type
+              .split('-')
+              .slice(1)
+              .join('-')
+          )
+        : ''
+
       // Only reasoning text is worth expanding for — a tool-only step collapses
       // to the header. While streaming that means the current step is a
       // reasoning paragraph that has completed at least once (something for
@@ -566,6 +606,15 @@ export const MessageItem = memo(
             )
         }
         if (steps.length === 0) return null
+        steps.push(
+          <StepRow
+            key={`${message.id}-done`}
+            marker={
+              <IconCircleCheck className="size-4 text-muted-foreground/60" />
+            }
+            text={t('chat:done')}
+          />
+        )
         return (
           <ol className="relative flex flex-col gap-2.5">
             {steps.map((step, i) =>
@@ -589,7 +638,9 @@ export const MessageItem = memo(
           defaultOpen={hasDisplayableContent && !hasFollowingContent}
         >
           <ChainOfThoughtHeader
-            streamingLabel={currentStepIsTool ? 'Using tools...' : 'Thinking'}
+            streamingLabel={
+              currentStepIsTool ? `${currentToolLabel}...` : 'Thinking'
+            }
             completedVerb={hasTools ? 'Worked' : 'Thought'}
           />
           <ChainOfThoughtContent>
@@ -747,6 +798,10 @@ export const MessageItem = memo(
         {/* Render message parts */}
         {renderedParts}
 
+        {message.role === 'assistant' && !isStreaming && webCitations.length > 0 && (
+          <WebSourcesRow citations={webCitations} />
+        )}
+
         {isLastMessage &&
           message.role === 'assistant' &&
           !awaitingApproval &&
@@ -839,12 +894,27 @@ export const MessageItem = memo(
                   <DeleteMessageDialog onDelete={handleDelete} />
                 )}
 
+                {selectedModel &&
+                  onContinue &&
+                  !isStreaming &&
+                  isLastMessage &&
+                  isStopped && (
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
+                      onClick={handleContinue}
+                      title={t('chat:actions.continue')}
+                    >
+                      <IconPlayerPlay size={16} />
+                    </Button>
+                  )}
+
                 {selectedModel && onRegenerate && !isStreaming && isLastMessage && (
                   <Button
                     variant="ghost"
                     size="icon-xs"
                     onClick={handleRegenerate}
-                    title="Regenerate response"
+                    title={t('chat:actions.regenerate')}
                   >
                     <IconRefresh size={16} />
                   </Button>

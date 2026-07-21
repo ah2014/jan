@@ -31,7 +31,7 @@ import {
   IconX,
   IconPaperclip,
   IconLoader2,
-  IconWorld,
+  IconWorldSearch,
   IconBrandChrome,
 } from '@tabler/icons-react'
 import { generateId } from 'ai'
@@ -83,6 +83,7 @@ import { ExtensionManager } from '@/lib/extension'
 import { useAttachments } from '@/hooks/useAttachments'
 import { toast } from 'sonner'
 import { isPlatformTauri } from '@/lib/platform/utils'
+import { shouldShowTokenCounter } from '@/lib/tokenCounterVisibility'
 import { useAttachmentIngestionPrompt } from '@/hooks/useAttachmentIngestionPrompt'
 import {
   NEW_THREAD_ATTACHMENT_KEY,
@@ -107,6 +108,7 @@ import {
   stripTrailingTilde,
 } from '@/lib/remoteAttach'
 import type { RemoteFileEntry } from '@/services/remote-files/types'
+import { useWebSearchConfig } from '@/hooks/useWebSearchConfig'
 
 type ChatInputProps = {
   className?: string
@@ -190,6 +192,8 @@ const ChatInput = memo(function ChatInput({
   // When projectId is present, treat as normal chat (disable agent mode UI)
   const effectiveAgentMode = isAgentMode && !projectId
   const toggleAgentMode = useAgentMode((state) => state.toggleAgentMode)
+  const webSearchEnabled = useWebSearchConfig((s) => s.webSearchEnabled)
+  const setWebSearchEnabled = useWebSearchConfig((s) => s.setWebSearchEnabled)
 
   const handleAgentToggle = useCallback(() => {
     toggleAgentMode(agentModeKey)
@@ -229,6 +233,14 @@ const ChatInput = memo(function ChatInput({
 
   // Reconcile video capability from /props once the model is loaded.
   useReconcileVideoCapability(selectedModel?.id, selectedProvider, isModelActive)
+
+  const tokenCounterVisible = shouldShowTokenCounter({
+    hasSelectedModel: !!selectedModel,
+    isAgentMode: effectiveAgentMode,
+    isInitialMessage: !!initialMessage,
+    hasMessages: (threadMessages?.length ?? 0) > 0,
+    hasPromptText: prompt.trim().length > 0,
+  })
   const [selectedAssistantId, setSelectedAssistantId] = useState<
     string | undefined
   >(loading ? undefined : currentAssistant?.id || '')
@@ -2374,18 +2386,30 @@ const ChatInput = memo(function ChatInput({
                   </Tooltip>
                 )}
 
-                {!effectiveAgentMode && selectedModel?.capabilities?.includes('web_search') && (
+                {!effectiveAgentMode && selectedModel?.capabilities?.includes('tools') && (
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <Button variant="ghost" size="icon-xs">
-                        <IconWorld
+                      <Button
+                        variant="ghost"
+                        size="icon-xs"
+                        className={cn(webSearchEnabled && 'text-primary')}
+                        onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+                      >
+                        <IconWorldSearch
                           size={18}
-                          className="text-muted-foreground"
+                          className={cn(
+                            'text-muted-foreground',
+                            webSearchEnabled && 'text-primary'
+                          )}
                         />
                       </Button>
                     </TooltipTrigger>
                     <TooltipContent>
-                      <p>Web Search</p>
+                      <p>
+                        {webSearchEnabled
+                          ? t('common:web_search') + ' (Active)'
+                          : t('common:web_search')}
+                      </p>
                     </TooltipContent>
                   </Tooltip>
                 )}
@@ -2708,18 +2732,11 @@ const ChatInput = memo(function ChatInput({
             </div>
 
             <div className="flex items-center gap-2">
-              {selectedProvider === 'llamacpp' &&
-                tokenCounterCompact &&
-                !effectiveAgentMode &&
-                !initialMessage &&
-                (threadMessages?.length > 0 || prompt.trim().length > 0) && (
-                  <div className="flex-1 flex justify-center">
-                    <TokenCounter
-                      messages={threadMessages || []}
-                      compact={true}
-                    />
-                  </div>
-                )}
+              {tokenCounterVisible && tokenCounterCompact && (
+                <div className="flex-1 flex justify-center">
+                  <TokenCounter messages={threadMessages || []} compact={true} />
+                </div>
+              )}
 
               {isStreaming ? (
                 <Tooltip>
@@ -2780,16 +2797,11 @@ const ChatInput = memo(function ChatInput({
         </div>
       )}
 
-      {selectedProvider === 'llamacpp' &&
-        isModelActive &&
-        !effectiveAgentMode &&
-        !tokenCounterCompact &&
-        !initialMessage &&
-        (threadMessages?.length > 0 || prompt.trim().length > 0) && (
-          <div className="flex-1 w-full flex justify-start px-2">
-            <TokenCounter messages={threadMessages || []} />
-          </div>
-        )}
+      {tokenCounterVisible && !tokenCounterCompact && (
+        <div className="flex-1 w-full flex justify-start px-2">
+          <TokenCounter messages={threadMessages || []} />
+        </div>
+      )}
 
       <JanBrowserExtensionDialog
         open={extensionDialogOpen}

@@ -200,6 +200,7 @@ export function DataProvider() {
   const { setServers, setSettings } = useMCPServers()
   const { setAssistants } = useAssistant()
   const { setThreads } = useThreads()
+  const setThreadsLoading = useThreads((s) => s.setThreadsLoading)
   const navigate = useNavigate()
   const serviceHub = useServiceHub()
 
@@ -323,9 +324,14 @@ export function DataProvider() {
             return
           }
           setThreads(threads)
+          setThreadsLoading(false)
         })
         .catch(() => {
-          if (cancelled || attempt >= 20) return
+          if (cancelled) return
+          if (attempt >= 20) {
+            setThreadsLoading(false)
+            return
+          }
           attempt += 1
           timer = setTimeout(load, Math.min(1000, 150 * attempt))
         })
@@ -347,7 +353,7 @@ export function DataProvider() {
       clearTimeout(timer)
       unsubscribe()
     }
-  }, [serviceHub, setThreads])
+  }, [serviceHub, setThreads, setThreadsLoading])
 
   // Sync remote providers with backend when providers change
   const providers = useModelProvider((s) => s.providers)

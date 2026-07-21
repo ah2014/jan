@@ -24,7 +24,26 @@ import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { MermaidError } from '@/components/MermaidError'
 import { CitationLink } from '@/components/CitationLink'
+import { WebCitationChip } from '@/components/WebCitationChip'
 import { MarkdownTable } from '@/components/MarkdownTable'
+
+const WEB_CITE_MARKER = /\[\[cite:\s*([^\]\s]+?)\s*\]\]/g
+
+// Models sometimes drop the scheme (e.g. "example.com/x"); normalize to https.
+function normalizeCiteUrl(raw: string): string {
+  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`
+}
+
+// Convert model-emitted [[cite:URL]] markers into anchors the Anchor override
+// renders as circular favicon chips.
+function linkifyWebCitations(text: string): string {
+  if (!text.includes('[[cite:')) return text
+  return text.replace(
+    WEB_CITE_MARKER,
+    (_m, url: string) =>
+      `[cite](#webcite-${encodeURIComponent(normalizeCiteUrl(url))})`
+  )
+}
 
 interface MarkdownProps {
   content: string
@@ -243,9 +262,11 @@ function RenderMarkdownComponent({
   // normalizeLatex, which also restores code-block safety.
   const normalizedContent = useMemo(
     () =>
-      isStreaming
-        ? normalizeMathDelimiters(effectiveContent)
-        : normalizeLatex(effectiveContent),
+      linkifyWebCitations(
+        isStreaming
+          ? normalizeMathDelimiters(effectiveContent)
+          : normalizeLatex(effectiveContent),
+      ),
     [effectiveContent, isStreaming]
   )
 
@@ -261,10 +282,14 @@ function RenderMarkdownComponent({
           </CitationLink>
         )
       }
+      if (typeof href === 'string' && href.startsWith('#webcite-')) {
+        const url = decodeURIComponent(href.slice('#webcite-'.length))
+        return <WebCitationChip messageId={messageId} url={url} />
+      }
       return <a {...props}>{children}</a>
     }
     return { a: Anchor, table: MarkdownTable, ...(components ?? {}) } as Components
-  }, [components])
+  }, [components, messageId])
 
   // Interactive HTML artifacts: only when the user opted in and the stream is
   // complete (an incomplete fence must not be torn out mid-token). Splitting the

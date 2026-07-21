@@ -15,6 +15,7 @@ import {
   IconLock,
   IconCpu,
   IconWorld,
+  IconWorldSearch,
   IconPaperclip,
   IconDevices2,
 } from '@tabler/icons-react'
@@ -197,6 +198,11 @@ const SettingsMenu = () => {
       title: 'common:https_proxy',
       route: route.settings.https_proxy,
       icon: IconWorld,
+    },
+    {
+      title: 'common:web_search',
+      route: route.settings.web_search,
+      icon: IconWorldSearch,
     },
     {
       title: 'common:keyboardShortcuts',
