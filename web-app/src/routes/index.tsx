@@ -10,6 +10,7 @@ import { useModelProvider } from '@/hooks/useModelProvider'
 import SetupScreen from '@/containers/SetupScreen'
 import { route } from '@/constants/routes'
 import { predefinedProviders } from '@/constants/providers'
+import { isPlatformTauri } from '@/lib/platform/utils'
 import { providerHasRemoteApiKeys } from '@/lib/provider-api-keys'
 import { Link } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
@@ -75,8 +76,9 @@ function Index() {
     // "download a model" setup screen is meaningless (and would hang trying
     // to pull the Jan model). Instead, prompt the user to configure a
     // provider — e.g. an OpenAI-compatible endpoint pointing at their own
-    // LAN llama.cpp server.
-    if (IS_WEB_APP) {
+    // LAN llama.cpp server. Use runtime detection so the desktop bundle
+    // served over the web (web server) also takes this branch.
+    if (!isPlatformTauri()) {
       return (
         <div className="flex h-full flex-col justify-center">
           <HeaderPage>

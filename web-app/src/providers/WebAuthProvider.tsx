@@ -8,9 +8,16 @@
  */
 
 import { PropsWithChildren, useEffect, useState } from 'react'
+import { isPlatformTauri } from '@/lib/platform/utils'
 
-const IS_WEB = (typeof IS_WEB_APP !== 'undefined' && IS_WEB_APP === true) ||
-  (IS_WEB_APP as unknown as string) === 'true'
+// Activate the web auth gate whenever we're NOT running inside Tauri — whether
+// that's the standalone web UI build (IS_WEB_APP=true) or the desktop bundle
+// served in a browser by the web server (no __TAURI__ bridge). This MUST match
+// the API shim's routing decision (`service.ts` → /api/invoke), which also uses
+// runtime detection; gating only on the build-time IS_WEB_APP flag lets the two
+// disagree when the desktop build is served over the web, so the client skips
+// the login page while the server still 401s every /api/invoke.
+const IS_WEB = !isPlatformTauri()
 
 type Status = 'checking' | 'authed' | 'unauthed'
 
