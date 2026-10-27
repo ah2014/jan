@@ -17,6 +17,7 @@ import {
   useState,
 } from 'react'
 import { Streamdown } from 'streamdown'
+import { MarkdownErrorBoundary } from '@/components/MarkdownErrorBoundary'
 import { Shimmer } from './shimmer'
 
 type ReasoningContextValue = {
@@ -177,9 +178,11 @@ export const ReasoningContent = memo(
       {...props}
     >
       <div className="ml-2 pl-4 border-l-2 border-dotted">
-        <Streamdown animate={true} animationDuration={500} {...props}>
-          {children}
-        </Streamdown>
+        <MarkdownErrorBoundary content={children}>
+          <Streamdown animate={true} animationDuration={500} {...props}>
+            {children}
+          </Streamdown>
+        </MarkdownErrorBoundary>
       </div>
     </CollapsibleContent>
   )

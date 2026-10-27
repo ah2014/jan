@@ -175,8 +175,8 @@ export interface FileRoutesByFullPath {
   '/settings/mcp-servers': typeof SettingsMcpServersRoute
   '/settings/privacy': typeof SettingsPrivacyRoute
   '/settings/shortcuts': typeof SettingsShortcutsRoute
-  '/settings/web-server': typeof SettingsWebServerRoute
   '/settings/web-search': typeof SettingsWebSearchRoute
+  '/settings/web-server': typeof SettingsWebServerRoute
   '/threads/$threadId': typeof ThreadsThreadIdRoute
   '/hub/': typeof HubIndexRoute
   '/settings/providers/$providerName': typeof SettingsProvidersProviderNameRoute
@@ -201,8 +201,8 @@ export interface FileRoutesByTo {
   '/settings/mcp-servers': typeof SettingsMcpServersRoute
   '/settings/privacy': typeof SettingsPrivacyRoute
   '/settings/shortcuts': typeof SettingsShortcutsRoute
-  '/settings/web-server': typeof SettingsWebServerRoute
   '/settings/web-search': typeof SettingsWebSearchRoute
+  '/settings/web-server': typeof SettingsWebServerRoute
   '/threads/$threadId': typeof ThreadsThreadIdRoute
   '/hub': typeof HubIndexRoute
   '/settings/providers/$providerName': typeof SettingsProvidersProviderNameRoute
@@ -228,8 +228,8 @@ export interface FileRoutesById {
   '/settings/mcp-servers': typeof SettingsMcpServersRoute
   '/settings/privacy': typeof SettingsPrivacyRoute
   '/settings/shortcuts': typeof SettingsShortcutsRoute
-  '/settings/web-server': typeof SettingsWebServerRoute
   '/settings/web-search': typeof SettingsWebSearchRoute
+  '/settings/web-server': typeof SettingsWebServerRoute
   '/threads/$threadId': typeof ThreadsThreadIdRoute
   '/hub/': typeof HubIndexRoute
   '/settings/providers/$providerName': typeof SettingsProvidersProviderNameRoute
@@ -256,8 +256,8 @@ export interface FileRouteTypes {
     | '/settings/mcp-servers'
     | '/settings/privacy'
     | '/settings/shortcuts'
-    | '/settings/web-server'
     | '/settings/web-search'
+    | '/settings/web-server'
     | '/threads/$threadId'
     | '/hub/'
     | '/settings/providers/$providerName'
@@ -282,8 +282,8 @@ export interface FileRouteTypes {
     | '/settings/mcp-servers'
     | '/settings/privacy'
     | '/settings/shortcuts'
-    | '/settings/web-server'
     | '/settings/web-search'
+    | '/settings/web-server'
     | '/threads/$threadId'
     | '/hub'
     | '/settings/providers/$providerName'
@@ -308,8 +308,8 @@ export interface FileRouteTypes {
     | '/settings/mcp-servers'
     | '/settings/privacy'
     | '/settings/shortcuts'
-    | '/settings/web-server'
     | '/settings/web-search'
+    | '/settings/web-server'
     | '/threads/$threadId'
     | '/hub/'
     | '/settings/providers/$providerName'
@@ -335,8 +335,8 @@ export interface RootRouteChildren {
   SettingsMcpServersRoute: typeof SettingsMcpServersRoute
   SettingsPrivacyRoute: typeof SettingsPrivacyRoute
   SettingsShortcutsRoute: typeof SettingsShortcutsRoute
-  SettingsWebServerRoute: typeof SettingsWebServerRoute
   SettingsWebSearchRoute: typeof SettingsWebSearchRoute
+  SettingsWebServerRoute: typeof SettingsWebServerRoute
   ThreadsThreadIdRoute: typeof ThreadsThreadIdRoute
   HubIndexRoute: typeof HubIndexRoute
   SettingsProvidersProviderNameRoute: typeof SettingsProvidersProviderNameRoute
@@ -535,8 +535,8 @@ const rootRouteChildren: RootRouteChildren = {
   SettingsMcpServersRoute: SettingsMcpServersRoute,
   SettingsPrivacyRoute: SettingsPrivacyRoute,
   SettingsShortcutsRoute: SettingsShortcutsRoute,
-  SettingsWebServerRoute: SettingsWebServerRoute,
   SettingsWebSearchRoute: SettingsWebSearchRoute,
+  SettingsWebServerRoute: SettingsWebServerRoute,
   ThreadsThreadIdRoute: ThreadsThreadIdRoute,
   HubIndexRoute: HubIndexRoute,
   SettingsProvidersProviderNameRoute: SettingsProvidersProviderNameRoute,

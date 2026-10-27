@@ -23,6 +23,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import 'katex/dist/katex.min.css'
 import { MermaidError } from '@/components/MermaidError'
+import { MarkdownErrorBoundary } from '@/components/MarkdownErrorBoundary'
 import { CitationLink } from '@/components/CitationLink'
 import { WebCitationChip } from '@/components/WebCitationChip'
 import { MarkdownTable } from '@/components/MarkdownTable'
@@ -392,22 +393,24 @@ function StreamdownViewComponent({
   )
 
   return (
-    <Streamdown
-      mode={isStreaming ? 'streaming' : 'static'}
-      parseIncompleteMarkdown={isStreaming ?? false}
-      animate={isStreaming ? false : (isAnimating ?? true)}
-      animationDuration={500}
-      linkSafety={LINK_SAFETY}
-      className={mergedClassName}
-      remarkPlugins={REMARK_PLUGINS}
-      rehypePlugins={REHYPE_PLUGINS}
-      components={effectiveComponents}
-      plugins={STREAMDOWN_PLUGINS}
-      controls={STREAMDOWN_CONTROLS}
-      mermaid={mermaidOptions}
-    >
-      {content}
-    </Streamdown>
+    <MarkdownErrorBoundary content={content}>
+      <Streamdown
+        mode={isStreaming ? 'streaming' : 'static'}
+        parseIncompleteMarkdown={isStreaming ?? false}
+        animate={isStreaming ? false : (isAnimating ?? true)}
+        animationDuration={500}
+        linkSafety={LINK_SAFETY}
+        className={mergedClassName}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={effectiveComponents}
+        plugins={STREAMDOWN_PLUGINS}
+        controls={STREAMDOWN_CONTROLS}
+        mermaid={mermaidOptions}
+      >
+        {content}
+      </Streamdown>
+    </MarkdownErrorBoundary>
   )
 }
 
