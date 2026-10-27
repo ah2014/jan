@@ -8,6 +8,7 @@ import { ThemeProvider } from '@/providers/ThemeProvider'
 import { InterfaceProvider } from '@/providers/InterfaceProvider'
 import { KeyboardShortcutsProvider } from '@/providers/KeyboardShortcuts'
 import { DataProvider } from '@/providers/DataProvider'
+import { isPlatformTauri } from '@/lib/platform'
 import { route } from '@/constants/routes'
 import { ExtensionProvider } from '@/providers/ExtensionProvider'
 import { WebAuthProvider } from '@/providers/WebAuthProvider'
@@ -60,9 +61,13 @@ const AppLayout = () => {
         <AnalyticProvider />
         <KeyboardShortcutsProvider />
         {/* Fake absolute panel top to enable window drag */}
-        {(IS_WINDOWS || IS_LINUX) && <WindowControls />}
-        {IS_LINUX && <WindowResizeGrips />}
-        {IS_TAURI && (
+        {/* WindowControls / ResizeGrips call Tauri window APIs (getCurrentWebviewWindow)
+            that crash on the web platform. IS_WINDOWS/IS_LINUX reflect the BUILD
+            machine's OS, not the runtime target, so also gate on a runtime Tauri
+            check — otherwise a web UI built on Linux renders these and throws. */}
+        {isPlatformTauri() && (IS_WINDOWS || IS_LINUX) && <WindowControls />}
+        {isPlatformTauri() && IS_LINUX && <WindowResizeGrips />}
+        {isPlatformTauri() && (
           <div
             className="fixed w-full h-12 z-20 top-0 cursor-grab active:cursor-grabbing"
             title="Drag window"
