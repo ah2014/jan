@@ -25,9 +25,7 @@
     /* Url */
     "paths": {
       "@/*": ["./src/*"],
-      "@janhq/core": ["../core"],
-      "@janhq/conversational-extension": ["../extensions/conversational-extension/src/index.ts"],
-      "@janhq/assistant-extension": ["../extensions/assistant-extension/src/index.ts"]
+      "@janhq/core": ["../core"]
     }
   },
   "include": ["src"],

@@ -23,6 +23,11 @@ type BundledEntry = {
 // Lazily imported so the extension bundles are NOT part of the service-hub
 // bootstrap graph; they load only when extensions are enumerated (after the
 // hub is ready), matching the pre-bundling load order.
+//
+// `IS_WEB_APP` gates desktop-only extensions (their source imports Tauri
+// plugins that don't exist in a browser). Rollup dead-code-eliminates them
+// from the standalone web UI build, so the unbundled imports never enter the
+// graph. Assistant + conversational are browser-safe and stay in both builds.
 const ENTRIES: BundledEntry[] = [
   {
     load: () => import('@janhq/assistant-extension'),
@@ -40,36 +45,41 @@ const ENTRIES: BundledEntry[] = [
     description: 'Enables conversations and state persistence via your file system.',
     mobile: true,
   },
-  {
-    load: () => import('@janhq/download-extension'),
-    name: '@janhq/download-extension',
-    productName: 'Download Manager',
-    version: '1.0.0',
-    description: 'Download and manage files and AI models in Jan.',
-  },
-  {
-    load: () => import('@janhq/llamacpp-extension'),
-    name: '@janhq/llamacpp-extension',
-    productName: 'llama.cpp Inference Engine',
-    version: '1.0.1',
-    description: 'This extension enables llama.cpp chat completion API calls',
-  },
-  {
-    load: () => import('@janhq/rag-extension'),
-    name: '@janhq/rag-extension',
-    productName: 'RAG Tools',
-    version: '0.1.0',
-    description:
-      'Registers RAG tools and orchestrates retrieval across parser, embeddings, and vector DB',
-  },
-  {
-    load: () => import('@janhq/vector-db-extension'),
-    name: '@janhq/vector-db-extension',
-    productName: 'Vector DB',
-    version: '0.1.0',
-    description: 'Vector DB integration using sqlite-vec if available with linear fallback',
-  },
 ]
+
+if (!IS_WEB_APP) {
+  ENTRIES.push(
+    {
+      load: () => import('@janhq/download-extension'),
+      name: '@janhq/download-extension',
+      productName: 'Download Manager',
+      version: '1.0.0',
+      description: 'Download and manage files and AI models in Jan.',
+    },
+    {
+      load: () => import('@janhq/llamacpp-extension'),
+      name: '@janhq/llamacpp-extension',
+      productName: 'llama.cpp Inference Engine',
+      version: '1.0.1',
+      description: 'This extension enables llama.cpp chat completion API calls',
+    },
+    {
+      load: () => import('@janhq/rag-extension'),
+      name: '@janhq/rag-extension',
+      productName: 'RAG Tools',
+      version: '0.1.0',
+      description:
+        'Registers RAG tools and orchestrates retrieval across parser, embeddings, and vector DB',
+    },
+    {
+      load: () => import('@janhq/vector-db-extension'),
+      name: '@janhq/vector-db-extension',
+      productName: 'Vector DB',
+      version: '0.1.0',
+      description: 'Vector DB integration using sqlite-vec if available with linear fallback',
+    },
+  )
+}
 
 // The MLX extension depends on @janhq/tauri-plugin-mlx-api, which only exists
 // on macOS. IS_MACOS is a build-time constant, so this import() is dead-code

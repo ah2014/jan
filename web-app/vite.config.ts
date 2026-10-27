@@ -66,6 +66,15 @@ export default defineConfig(({ mode }) => {
         '@': path.resolve(__dirname, './src'),
         '@janhq/conversational-extension': path.resolve(__dirname, '../extensions/conversational-extension/src/index.ts'),
         '@janhq/assistant-extension': path.resolve(__dirname, '../extensions/assistant-extension/src/index.ts'),
+        // Desktop-only extensions; bundled into the app binary via
+        // bundled-extensions.ts in non-web builds. Resolved from source so no
+        // prebuilt dist is required. Tree-shaken out of the web UI build by
+        // the IS_WEB_APP gate in bundled-extensions.ts.
+        '@janhq/download-extension': path.resolve(__dirname, '../extensions/download-extension/src/index.ts'),
+        '@janhq/llamacpp-extension': path.resolve(__dirname, '../extensions/llamacpp-extension/src/index.ts'),
+        '@janhq/rag-extension': path.resolve(__dirname, '../extensions/rag-extension/src/index.ts'),
+        '@janhq/vector-db-extension': path.resolve(__dirname, '../extensions/vector-db-extension/src/index.ts'),
+        '@janhq/mlx-extension': path.resolve(__dirname, '../extensions/mlx-extension/src/index.ts'),
         // Resolve the core package from its root (-> built dist, same as the
         // node_modules resolution the desktop build uses). This makes
         // `@janhq/core` resolvable from the statically-bundled extension
