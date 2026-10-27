@@ -124,8 +124,9 @@ fi
 say "Building .deb (tauri build --bundles deb)..."
 NO_STRIP=1 yarn tauri build --bundles deb
 
-# 10. Report
-DEB="$(find "$DEB_DIR" -maxdepth 1 -name '*.deb' -print -quit 2>/dev/null || true)"
-[[ -n "$DEB" ]] || die "No .deb produced in $DEB_DIR"
+# 10. Report — match the current version, not whatever stale .deb is oldest
+APP_VERSION=$(grep -m1 '"version"' src-tauri/tauri.conf.json | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+DEB="$(ls "$DEB_DIR"/Jan_"${APP_VERSION}"_*.deb 2>/dev/null | head -1 || true)"
+[[ -n "$DEB" ]] || die "No .deb produced in $DEB_DIR (expected Jan_${APP_VERSION}_*.deb)"
 ok "Built: $DEB"
 printf "\nInstall with:\n  sudo apt install ./%s\n" "$DEB"

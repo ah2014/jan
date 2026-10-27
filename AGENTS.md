@@ -131,6 +131,38 @@ NODE_OPTIONS=--max-old-space-size=4096 yarn exec vitest run \
 (node: `--cwd` is not a valid vitest flag here — the monorepo uses the root
 vitest with `--project @janhq/web-app` and positional path filters.)
 
+## Post-merge: sync the displayed app version
+
+**Always do this after merging `main`/`upstream` into any branch** — it's the
+most commonly forgotten step.
+
+The version shown in **Settings → General** (`v{VERSION}`) and used by the
+update-check / analytics does **not** come from the Tauri config. It comes from
+`web-app/package.json`'s `version` field, baked in at build time via Vite's
+`define`:
+
+```
+web-app/package.json  →  vite.config.ts (VERSION = packageJson.version)  →  global VERSION  →  general.tsx
+```
+
+The authoritative app version lives in `src-tauri/tauri.conf.json` (and
+`src-tauri/Cargo.toml`). **Upstream does not keep the two in sync** — the
+web-app `version` lags behind by several releases, so after every merge the
+desktop app shows a stale version and spuriously prompts "New Version
+available". Fix it by syncing `web-app/package.json` to the Tauri version:
+
+```bash
+# Read the authoritative version from tauri.conf.json and write it into web-app/package.json
+TAURI_VER=$(grep -m1 '"version"' src-tauri/tauri.conf.json | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+node -e "const f='web-app/package.json'; const p=require('./'+f); p.version='$TAURI_VER'; require('fs').writeFileSync(f, JSON.stringify(p,null,2)+'\n')"
+echo "web-app version synced to $TAURI_VER"
+```
+
+Confirm both files agree before committing:
+```bash
+grep '"version"' web-app/package.json src-tauri/tauri.conf.json
+```
+
 ## Web interface (phone access)
 
 The desktop app can additionally serve a web UI over the LAN. Configure it in

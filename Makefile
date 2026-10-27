@@ -248,7 +248,7 @@ build: install-and-build install-rust-targets
 # Build the .deb installer only (Linux; skips AppImage).
 build-deb:
 	chmod +x src-tauri/build-utils/buildDeb.sh
-	./src-tauri/build-utils/buildDeb.sh
+	./src-tauri/build-utils/buildDeb.sh --clean
 
 clean:
 ifeq ($(DETECTED_OS),Windows)
