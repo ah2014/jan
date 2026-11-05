@@ -77,6 +77,15 @@ else
   ok "core/dist present"
 fi
 
+# 2b. Tauri plugin JS APIs (web-app imports @janhq/tauri-plugin-*-api dist-js;
+#     needed by any web-app build, incl. tauri's beforeBuildCommand)
+if ! ls src-tauri/plugins/*/dist-js/index.js >/dev/null 2>&1; then
+  say "Building Tauri plugin JS APIs..."
+  yarn build:tauri:plugin:api
+else
+  ok "plugin dist-js present (skip plugin API build)"
+fi
+
 # 3. Bundled extensions (pre-install/*.tgz are shipped inside the deb)
 if [[ $FORCE -eq 1 ]] || ! ls pre-install/*.tgz >/dev/null 2>&1; then
   say "Building extensions..."
@@ -96,6 +105,15 @@ fi
 # 5. Copy LICENSE + extension tarballs into src-tauri/resources
 say "Copying assets (LICENSE + pre-install tgz)..."
 yarn copy:assets:tauri
+
+# 5b. Web UI (bundled as a deb resource so the web server works out of the box:
+#     resolve_ui_path finds <resource_dir>/resources/web-ui on installed apps)
+if need src-tauri/resources/web-ui/index.html; then
+  say "Building web UI (IS_WEB_APP=true) and bundling into resources..."
+  yarn build:webui:bundle
+else
+  ok "resources/web-ui present (skip web UI build)"
+fi
 
 # 6. Runtime binaries (bun, uv, sqlite-vec)
 if need src-tauri/resources/bin/bun; then

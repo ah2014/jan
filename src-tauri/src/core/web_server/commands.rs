@@ -83,8 +83,15 @@ fn resolve_ui_path(app_handle: &AppHandle, override_path: &Option<String>) -> Pa
             return PathBuf::from(env_path);
         }
     }
-    // 3. Bundled resource (production): <resource_dir>/web-ui
+    // 3. Bundled resource (production). Bundle `resources` entries keep their
+    //    config-relative path under the resource dir (like `resources/bin`),
+    //    so the deb/AppImage layout is <resource_dir>/resources/web-ui. Also
+    //    probe a directly-dropped <resource_dir>/web-ui for exotic layouts.
     if let Ok(res) = app_handle.path().resource_dir() {
+        let candidate = res.join("resources").join("web-ui");
+        if candidate.is_dir() {
+            return candidate;
+        }
         let candidate = res.join("web-ui");
         if candidate.is_dir() {
             return candidate;
