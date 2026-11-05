@@ -1,6 +1,6 @@
 use crate::{VectorDBError, VectorDBState};
 use crate::db::{
-    self, AttachmentFileInfo, SearchResult, MinimalChunkInput,
+    self, AttachmentFileInfo, MemoryHit, MinimalChunkInput, SearchResult,
 };
 use serde::{Deserialize, Serialize};
 use tauri::State;
@@ -26,41 +26,12 @@ pub struct FileInput {
 #[tauri::command]
 pub async fn get_status(state: State<'_, VectorDBState>) -> Result<Status, VectorDBError> {
     println!("[VectorDB] Checking ANN availability...");
-    let temp = db::collection_path(&state.base_dir, "__status__");
+    let temp = db::collection_path(&state.base_dir, "__status__")?;
     let conn = db::open_or_init_conn(&temp)?;
 
-    // Verbose version for startup diagnostics
-    let ann = {
-        if conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp.temp_vec USING vec0(embedding float[1])", []).is_ok() {
-            let _ = conn.execute("DROP TABLE IF EXISTS temp.temp_vec", []);
-            println!("[VectorDB] ✓ sqlite-vec already loaded");
-            true
-        } else {
-            unsafe { let _ = conn.load_extension_enable(); }
-            let paths = db::possible_sqlite_vec_paths();
-            println!("[VectorDB] Trying {} bundled paths...", paths.len());
-            let mut found = false;
-            for p in paths {
-                println!("[VectorDB]   Trying: {}", p);
-                unsafe {
-                    if conn.load_extension(&p, Some("sqlite3_vec_init")).is_ok()
-                        && conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS temp.temp_vec USING vec0(embedding float[1])", []).is_ok()
-                    {
-                        let _ = conn.execute("DROP TABLE IF EXISTS temp.temp_vec", []);
-                        println!("[VectorDB] ✓ sqlite-vec loaded from: {}", p);
-                        found = true;
-                        break;
-                    }
-                }
-            }
-            if !found {
-                println!("[VectorDB] ✗ Failed to load sqlite-vec from all paths");
-            }
-            found
-        }
-    };
+    let ann = db::try_load_sqlite_vec_verbose(&conn);
 
-    println!("[VectorDB] ANN status: {}", if ann { "AVAILABLE ✓" } else { "NOT AVAILABLE ✗" });
+    println!("[VectorDB] ANN status: {}", if ann { "AVAILABLE" } else { "NOT AVAILABLE" });
     Ok(Status { ann_available: ann })
 }
 
@@ -71,7 +42,7 @@ pub async fn create_collection<R: tauri::Runtime>(
     name: String,
     dimension: usize,
 ) -> Result<(), VectorDBError> {
-    let path = db::collection_path(&state.base_dir, &name);
+    let path = db::collection_path(&state.base_dir, &name)?;
     let conn = db::open_or_init_conn(&path)?;
 
     let has_ann = db::create_schema(&conn, dimension)?;
@@ -90,7 +61,7 @@ pub async fn create_file<R: tauri::Runtime>(
     collection: String,
     file: FileInput,
 ) -> Result<AttachmentFileInfo, VectorDBError> {
-    let path = db::collection_path(&state.base_dir, &collection);
+    let path = db::collection_path(&state.base_dir, &collection)?;
     let conn = db::open_or_init_conn(&path)?;
     db::create_file(
         &conn,
@@ -109,7 +80,7 @@ pub async fn insert_chunks<R: tauri::Runtime>(
     file_id: String,
     chunks: Vec<MinimalChunkInput>,
 ) -> Result<(), VectorDBError> {
-    let path = db::collection_path(&state.base_dir, &collection);
+    let path = db::collection_path(&state.base_dir, &collection)?;
     let conn = db::open_or_init_conn(&path)?;
     let vec_loaded = db::try_load_sqlite_vec(&conn);
     db::insert_chunks(&conn, &file_id, chunks, vec_loaded)
@@ -122,7 +93,7 @@ pub async fn delete_file<R: tauri::Runtime>(
     collection: String,
     file_id: String,
 ) -> Result<(), VectorDBError> {
-    let path = db::collection_path(&state.base_dir, &collection);
+    let path = db::collection_path(&state.base_dir, &collection)?;
     let conn = db::open_or_init_conn(&path)?;
     db::delete_file(&conn, &file_id)
 }
@@ -139,7 +110,7 @@ pub async fn search_collection<R: tauri::Runtime>(
     mode: Option<String>,
     file_ids: Option<Vec<String>>,
 ) -> Result<Vec<SearchResult>, VectorDBError> {
-    let path = db::collection_path(&state.base_dir, &collection);
+    let path = db::collection_path(&state.base_dir, &collection)?;
     let conn = db::open_or_init_conn(&path)?;
     let vec_loaded = db::try_load_sqlite_vec(&conn);
     db::search_collection(&conn, &query_embedding, limit, threshold, mode, vec_loaded, file_ids)
@@ -152,7 +123,7 @@ pub async fn list_attachments<R: tauri::Runtime>(
     collection: String,
     limit: Option<usize>,
 ) -> Result<Vec<AttachmentFileInfo>, VectorDBError> {
-    let path = db::collection_path(&state.base_dir, &collection);
+    let path = db::collection_path(&state.base_dir, &collection)?;
     let conn = db::open_or_init_conn(&path)?;
     db::list_attachments(&conn, limit)
 }
@@ -164,7 +135,7 @@ pub async fn delete_chunks<R: tauri::Runtime>(
     collection: String,
     ids: Vec<String>,
 ) -> Result<(), VectorDBError> {
-    let path = db::collection_path(&state.base_dir, &collection);
+    let path = db::collection_path(&state.base_dir, &collection)?;
     let conn = db::open_or_init_conn(&path)?;
     db::delete_chunks(&conn, ids)
 }
@@ -175,7 +146,7 @@ pub async fn delete_collection<R: tauri::Runtime>(
     state: State<'_, VectorDBState>,
     collection: String,
 ) -> Result<(), VectorDBError> {
-    let path = db::collection_path(&state.base_dir, &collection);
+    let path = db::collection_path(&state.base_dir, &collection)?;
     if path.exists() {
         std::fs::remove_file(path).ok();
     }
@@ -201,7 +172,52 @@ pub async fn get_chunks<R: tauri::Runtime>(
     start_order: i64,
     end_order: i64,
 ) -> Result<Vec<SearchResult>, VectorDBError> {
-    let path = db::collection_path(&state.base_dir, &collection);
+    let path = db::collection_path(&state.base_dir, &collection)?;
     let conn = db::open_or_init_conn(&path)?;
     db::get_chunks(&conn, file_id, start_order, end_order)
+}
+
+// ============================================================================
+// Project-scoped agent memory (FTS5 / BM25)
+// ============================================================================
+
+fn memory_conn(state: &VectorDBState) -> Result<rusqlite::Connection, VectorDBError> {
+    let path = db::collection_path(&state.base_dir, db::MEMORY_COLLECTION)?;
+    db::open_or_init_conn(&path)
+}
+
+#[tauri::command]
+pub async fn memory_index<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
+    state: State<'_, VectorDBState>,
+    msg_id: String,
+    project_id: String,
+    text: String,
+    role: String,
+    ts: i64,
+) -> Result<(), VectorDBError> {
+    let conn = memory_conn(&state)?;
+    db::memory_index(&conn, &msg_id, &project_id, &text, &role, ts)
+}
+
+#[tauri::command]
+pub async fn memory_search<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
+    state: State<'_, VectorDBState>,
+    project_id: String,
+    query: String,
+    top_k: usize,
+) -> Result<Vec<MemoryHit>, VectorDBError> {
+    let conn = memory_conn(&state)?;
+    db::memory_search(&conn, &project_id, &query, top_k)
+}
+
+#[tauri::command]
+pub async fn memory_clear<R: tauri::Runtime>(
+    _app: tauri::AppHandle<R>,
+    state: State<'_, VectorDBState>,
+    project_id: Option<String>,
+) -> Result<(), VectorDBError> {
+    let conn = memory_conn(&state)?;
+    db::memory_clear(&conn, project_id.as_deref())
 }

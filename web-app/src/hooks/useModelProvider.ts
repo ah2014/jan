@@ -365,10 +365,13 @@ export const useModelProvider = create<ModelProviderState>()(
       storage: createJSONStorage(() => backendStorage),
       // Async backend storage; hydrate explicitly after ServiceHub init.
       skipHydration: true,
-      // Never persist API keys — they live in the OS keyring only.
+      // Never persist API keys - they live in the OS keyring only - nor
+      // extension providers, which exist only while their extension runs.
       partialize: (state) => ({
         ...state,
-        providers: state.providers.map(stripProviderSecrets),
+        providers: state.providers
+          .filter((p) => !p.source)
+          .map(stripProviderSecrets),
       }),
       migrate: (persistedState: unknown, version: number) => {
         const state = persistedState as ModelProviderState & {
@@ -781,9 +784,91 @@ export const useModelProvider = create<ModelProviderState>()(
           })
         }
 
+        if (version <= 17 && state?.providers) {
+          // Grammar became a per-model setting; add the control to persisted
+          // llamacpp models so the sidebar renders it.
+          state.providers.forEach((provider) => {
+            if (provider.provider !== 'llamacpp' || !provider.models) return
+            provider.models.forEach((model) => {
+              if (!model.settings) model.settings = {}
+              if (!model.settings.grammar) {
+                model.settings.grammar = {
+                  ...modelSettings.grammar,
+                  controller_props: {
+                    ...modelSettings.grammar.controller_props,
+                  },
+                }
+              }
+            })
+          })
+        }
+
+        if (version <= 18 && state?.providers) {
+          // llama.cpp 0.4.0 added --n-cpu-ffn, the dense counterpart of
+          // --n-cpu-moe; add the control to persisted llamacpp models so the
+          // sidebar renders it.
+          state.providers.forEach((provider) => {
+            if (provider.provider !== 'llamacpp' || !provider.models) return
+            provider.models.forEach((model) => {
+              if (!model.settings) model.settings = {}
+              if (!model.settings.n_cpu_ffn) {
+                model.settings.n_cpu_ffn = {
+                  ...modelSettings.n_cpu_ffn,
+                  controller_props: {
+                    ...modelSettings.n_cpu_ffn.controller_props,
+                  },
+                }
+              }
+            })
+          })
+        }
+
+        if (version <= 19 && state?.providers) {
+          // llama.cpp 0.7.0 added --moe-cache-mib. It is per-model because
+          // llama.cpp refuses to load a dense model with it set; add the
+          // control to persisted llamacpp models so the sidebar renders it.
+          state.providers.forEach((provider) => {
+            if (provider.provider !== 'llamacpp' || !provider.models) return
+            provider.models.forEach((model) => {
+              if (!model.settings) model.settings = {}
+              if (!model.settings.moe_cache_mib) {
+                model.settings.moe_cache_mib = {
+                  ...modelSettings.moe_cache_mib,
+                  controller_props: {
+                    ...modelSettings.moe_cache_mib.controller_props,
+                  },
+                }
+              }
+            })
+          })
+        }
+
+        if (version <= 20 && state?.providers) {
+          // Auto-fit is on by default again (jan-internal#487), and fit leaves
+          // a set context alone, so the 8192 the v16 migration seeded would
+          // keep it from shrinking the context and would shadow the launched
+          // n_ctx in every readout that prefers ctx_len. The seed carries no provenance, so
+          // 8192 is taken to be it, as v12 did; a user who typed exactly 8192
+          // loses it here and in model.yml (the extension's
+          // migrateSeededCtxSize), which with fit off changes nothing.
+          state.providers.forEach((provider) => {
+            if (provider.provider !== 'llamacpp' || !provider.models) return
+            provider.models.forEach((model) => {
+              const controllerProps = (
+                model.settings?.ctx_len as
+                  | { controller_props?: { value?: unknown } }
+                  | undefined
+              )?.controller_props
+              if (controllerProps && Number(controllerProps.value) === 8192) {
+                controllerProps.value = ''
+              }
+            })
+          })
+        }
+
         return state
       },
-      version: 17,
+      version: 21,
     }
   )
 )

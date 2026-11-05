@@ -82,10 +82,13 @@ pub async fn upsert_provider_config(
         models: request.models,
         model_capabilities: Default::default(),
         api_type: request.api_type,
+        // Registration carries no ratio: this path has no field for one, and
+        // `None` inherits `[agent].compaction_ratio` for the route.
+        compaction_ratio: None,
     };
 
     // Persist the key chain to the OS keyring so it survives webview storage
-    // clears and is readable by out-of-process consumers (jan-cli). Keyring
+    // clears and is readable by out-of-process consumers (jan CLI). Keyring
     // access is blocking, so run it off-thread and before taking the config
     // lock. Keyring failure (e.g. headless Linux without an unlocked Secret
     // Service) must not block registration; the in-memory + on-disk config
@@ -344,6 +347,7 @@ mod tests {
             models: vec![],
             model_capabilities: Default::default(),
             api_type: None,
+            compaction_ratio: None,
         }
     }
 

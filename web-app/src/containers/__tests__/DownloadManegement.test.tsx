@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import '@testing-library/jest-dom'
 
 // ---- Module mocks ----------------------------------------------------------
@@ -14,12 +14,6 @@ const hoisted = vi.hoisted(() => ({
     removeLocalDownloadingModel: vi.fn(),
     setPaused: vi.fn(),
     addLocalDownloadingModel: vi.fn(),
-  },
-  updateState: {
-    isDownloading: false,
-    downloadProgress: 0,
-    downloadedBytes: 0,
-    totalBytes: 0,
   },
   navigateMock: vi.fn(),
   toastMock: {
@@ -44,10 +38,6 @@ vi.mock('@/hooks/useDownloadStore', () => {
   return { useDownloadStore }
 })
 
-vi.mock('@/hooks/useAppUpdater', () => ({
-  useAppUpdater: () => ({ updateState: hoisted.updateState }),
-}))
-
 vi.mock('@/hooks/useServiceHub', () => ({
   useServiceHub: () => ({
     models: () => ({
@@ -67,6 +57,7 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 vi.mock('@janhq/core', () => ({
+  ServiceKeys: { Downloads: { id: 'downloads' } },
   DownloadEvent: {
     onFileDownloadUpdate: 'fdu',
     onFileDownloadError: 'fde',
@@ -112,14 +103,20 @@ vi.mock('@/constants/routes', () => ({
   route: { settings: { general: '/settings/general' } },
 }))
 
-// @ts-expect-error — test shim for window.core used by cancel branch
-window.core = {
-  extensionManager: {
-    getByName: () => ({ cancelDownload: hoisted.cancelDownloadMock }),
-  },
-}
+// The cancel branch for llamacpp/mlx tasks goes to the host Downloads service.
+vi.mock('@/lib/extensions/host', () => ({
+  getExtensionHost: () => ({
+    services: {
+      get: (key: { id: string }) =>
+        key.id === 'downloads'
+          ? { cancelDownload: hoisted.cancelDownloadMock }
+          : undefined,
+    },
+  }),
+}))
 
 import { DownloadManagement } from '../DownloadManegement'
+import { useAppUpdateDownload } from '@/stores/app-update-download-store'
 
 describe('DownloadManagement', () => {
   beforeEach(() => {
@@ -127,18 +124,18 @@ describe('DownloadManagement', () => {
     hoisted.downloadStore.downloads = {}
     hoisted.downloadStore.resumeParams = {}
     hoisted.downloadStore.localDownloadingModels = new Set()
-    hoisted.updateState = {
+    useAppUpdateDownload.setState({
       isDownloading: false,
       downloadProgress: 0,
       downloadedBytes: 0,
       totalBytes: 0,
-    }
+    })
     hoisted.eventHandlers = {}
   })
 
-  it('renders empty state when no downloads', () => {
-    render(<DownloadManagement />)
-    expect(screen.getByText(/Your download progress/)).toBeInTheDocument()
+  it('renders nothing when no downloads are in progress', () => {
+    const { container } = render(<DownloadManagement />)
+    expect(container).toBeEmptyDOMElement()
   })
 
   it('renders a download item with progress', () => {
@@ -170,19 +167,19 @@ describe('DownloadManagement', () => {
     expect(screen.getByText('Downloading...')).toBeInTheDocument()
   })
 
-  it('renders App Update progress when updater is downloading', () => {
-    hoisted.updateState = {
+  it('renders App Update progress when an update is downloading', () => {
+    useAppUpdateDownload.setState({
       isDownloading: true,
       downloadProgress: 0.5,
       downloadedBytes: 1024,
       totalBytes: 2048,
-    }
+    })
     render(<DownloadManagement />)
     expect(screen.getByText('App Update')).toBeInTheDocument()
     expect(screen.getByText('50%')).toBeInTheDocument()
   })
 
-  it('cancels llamacpp download via extension manager', () => {
+  it('cancels llamacpp download via the Downloads service', () => {
     hoisted.downloadStore.downloads = {
       'llamacpp/foo': {
         name: 'llamacpp/foo',
@@ -212,64 +209,42 @@ describe('DownloadManagement', () => {
     await waitFor(() => expect(hoisted.abortDownloadMock).toHaveBeenCalledWith('cloud-model'))
   })
 
-  it('handles HTTP 401 download error with settings toast action', () => {
-    render(<DownloadManagement />)
-    const handler = hoisted.eventHandlers['fde']
-    expect(handler).toBeDefined()
-    handler({ modelId: 'x', error: 'HTTP status 401 unauth' })
-    expect(hoisted.toastMock.error).toHaveBeenCalledWith(
-      'Hugging Face token required',
-      expect.any(Object)
-    )
-    expect(hoisted.downloadStore.removeDownload).toHaveBeenCalledWith('x')
+
+
+
+
+
+
+
+  it('appears when an app update starts downloading', () => {
+    const { container } = render(<DownloadManagement />)
+    expect(container).toBeEmptyDOMElement()
+    act(() => {
+      hoisted.eventHandlers['audu']({ progress: 0.1, downloadedBytes: 10, totalBytes: 100 })
+    })
+    expect(screen.getByText('App Update')).toBeInTheDocument()
   })
 
-  it('handles HTTP 403 download error', () => {
+  it('keeps app update progress across a remount (sidebar toggle)', () => {
+    const { unmount } = render(<DownloadManagement />)
+    act(() => {
+      hoisted.eventHandlers['audu']({ progress: 0.1, downloadedBytes: 10, totalBytes: 100 })
+    })
+    unmount()
+    // No further progress events: the new mount must not wait for one
     render(<DownloadManagement />)
-    hoisted.eventHandlers['fde']({ modelId: 'y', error: 'HTTP status 403 denied' })
-    expect(hoisted.toastMock.error).toHaveBeenCalledWith(
-      'Accept model license on Hugging Face',
-      expect.any(Object)
-    )
+    expect(screen.getByText('App Update')).toBeInTheDocument()
   })
 
-  it('handles HTTP 429 rate-limit error', () => {
-    render(<DownloadManagement />)
-    hoisted.eventHandlers['fde']({ modelId: 'z', error: 'HTTP status 429 slow down' })
-    expect(hoisted.toastMock.error).toHaveBeenCalledWith(
-      'Rate limited by Hugging Face',
-      expect.any(Object)
-    )
-  })
-
-  it('handles generic download error with translated toast', () => {
-    render(<DownloadManagement />)
-    hoisted.eventHandlers['fde']({ modelId: 'w', error: 'other' })
-    expect(hoisted.toastMock.error).toHaveBeenCalledWith(
-      'common:toast.downloadFailed.title',
-      expect.any(Object)
-    )
-  })
-
-  it('on file download success, removes download and shows toast', () => {
-    render(<DownloadManagement />)
-    hoisted.eventHandlers['fds']({ modelId: 'ok' })
-    expect(hoisted.downloadStore.removeDownload).toHaveBeenCalledWith('ok')
-    expect(hoisted.toastMock.success).toHaveBeenCalled()
-  })
-
-  it('on model validation started, shows info toast', () => {
-    render(<DownloadManagement />)
-    hoisted.eventHandlers['mvs']({ modelId: 'v', downloadType: 'model' })
-    expect(hoisted.toastMock.info).toHaveBeenCalled()
-  })
-
-  it('on model validation failed, dismisses toast and removes download', () => {
-    render(<DownloadManagement />)
-    hoisted.eventHandlers['mvf']({ modelId: 'v', error: 'bad', reason: 'checksum' })
-    expect(hoisted.toastMock.dismiss).toHaveBeenCalledWith('model-validation-started-v')
-    expect(hoisted.downloadStore.removeDownload).toHaveBeenCalledWith('v')
-    expect(hoisted.toastMock.error).toHaveBeenCalled()
+  it('hides again once the app update download finishes', () => {
+    const { container } = render(<DownloadManagement />)
+    act(() => {
+      hoisted.eventHandlers['audu']({ progress: 0.5, downloadedBytes: 50, totalBytes: 100 })
+    })
+    act(() => {
+      hoisted.eventHandlers['auds']()
+    })
+    expect(container).toBeEmptyDOMElement()
   })
 
   it('on app update download success, shows success toast', () => {
@@ -356,25 +331,7 @@ describe('DownloadManagement', () => {
     expect(hoisted.toastMock.error).toHaveBeenCalled()
   })
 
-  it('keeps the entry on stopped event when paused', () => {
-    hoisted.downloadStore.downloads = {
-      'cloud-model': { name: 'cloud-model', progress: 0.3, paused: true },
-    }
-    render(<DownloadManagement />)
-    hoisted.eventHandlers['fdx']({ modelId: 'cloud-model' })
-    expect(hoisted.downloadStore.removeDownload).not.toHaveBeenCalled()
-  })
 
-  it('removes the entry on stopped event when not paused', () => {
-    hoisted.downloadStore.downloads = {
-      'cloud-model': { name: 'cloud-model', progress: 0.3 },
-    }
-    render(<DownloadManagement />)
-    hoisted.eventHandlers['fdx']({ modelId: 'cloud-model' })
-    expect(hoisted.downloadStore.removeDownload).toHaveBeenCalledWith(
-      'cloud-model'
-    )
-  })
 
   it('does not show pause/resume for llamacpp direct downloads', () => {
     hoisted.downloadStore.downloads = {

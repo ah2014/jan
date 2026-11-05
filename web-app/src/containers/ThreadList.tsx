@@ -30,6 +30,7 @@ import { RenameThreadDialog, DeleteThreadDialog } from '@/containers/dialogs'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import { ThreadMessage } from '@janhq/core'
+import { ContributedMenuItems } from '@/containers/extensions/ContributedMenuItems'
 
 const ThreadItem = memo(
   ({
@@ -154,7 +155,7 @@ const ThreadItem = memo(
     return (
       <SidebarMenuItem>
         {currentProjectId ?
-          <Link to="/threads/$threadId" params={{ threadId: thread.id }} className={cn("bg-card dark:bg-secondary/20 mb-2 px-4 py-4 border hover:dark:bg-secondary/30 rounded-lg block max-w-full overflow-hidden", isSelected && "border-primary")}>
+          <Link to="/threads/$threadId" params={{ threadId: thread.id }} data-testid={`thread-row-${thread.id}`} className={cn("bg-card dark:bg-secondary/20 mb-2 px-4 py-4 border hover:dark:bg-secondary/30 rounded-lg block max-w-full overflow-hidden", isSelected && "border-primary")}>
               <div className="flex items-center gap-1.5 min-w-0">
                 {isActive && (
                   <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />
@@ -169,7 +170,7 @@ const ThreadItem = memo(
           </Link>
           :
           <SidebarMenuButton asChild isActive={isSelected}>
-            <Link to="/threads/$threadId" params={{ threadId: thread.id }}>
+            <Link to="/threads/$threadId" params={{ threadId: thread.id }} data-testid={`thread-row-${thread.id}`}>
               {isActive && (
                 <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />
               )}
@@ -180,6 +181,7 @@ const ThreadItem = memo(
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <SidebarMenuAction
+              data-testid={`thread-menu-${thread.id}`}
               showOnHover
               className={cn("hover:bg-sidebar-foreground/8", currentProjectId && 'mt-4 mr-2')}
             >
@@ -249,8 +251,14 @@ const ThreadItem = memo(
                 </DropdownMenuItem>
               </>
             )}
+            <ContributedMenuItems
+              location="thread/context"
+              context={{ location: 'thread/context', threadId: thread.id }}
+              separator
+            />
             <DropdownMenuSeparator />
             <DropdownMenuItem
+              data-testid="thread-delete"
               variant="destructive"
               disabled={thread.title === 'What is Jan?' && !localStorage.getItem('setup-completed')}
               onSelect={() => {

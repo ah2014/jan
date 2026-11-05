@@ -154,7 +154,6 @@
   "loading": "読み込み中...",
   "settingUpJan": "Janを起動しています…",
   "registeringExtensions": "拡張機能を登録しています…",
-  "loadingExtensions": "拡張機能を読み込んでいます… ({{done}}/{{total}})",
   "error": "エラー",
   "success": "成功",
   "warning": "警告",
@@ -252,17 +251,17 @@
       "title": "デフォルトのサンプリングパラメータ",
       "description": "このモデルのデフォルトのサンプラー設定です。アシスタントごとまたはリクエストごとの値で上書きされない限り使用されます。"
     },
-    "mtp": {
-      "section": "マルチトークン予測 (MTP)",
-      "enable": "MTPを有効にする",
-      "enableDescription": "モデルに内蔵されたMTPヘッドを使用して、ステップごとに複数のトークンを下書きします。モデルにMTPの重みがある場合（DeepSeek-V3、GLM-4.5/4.6、MiMo v2.5 など）、生成が高速化されます。",
-      "needsUpgrade": "MTPを有効にするには、llama.cppバックエンドをビルドb9193以降に更新してください。",
+    "specDraft": {
       "nMax": "最大下書きトークン数",
       "nMaxDescription": "ステップごとに下書きするトークンの最大数。デフォルトは16です。",
       "nMin": "最小下書きトークン数",
       "nMinDescription": "ステップごとに下書きするトークンの最小数。デフォルトは0です。",
       "pMin": "最小下書き確率",
-      "pMinDescription": "貪欲な下書きの最小確率（0〜1）。デフォルトは0.75です。"
+      "pMinDescription": "貪欲な下書きの最小確率（0〜1）。デフォルトは0.75です。",
+      "probabilistic": "確率的な下書きサンプリング",
+      "probabilisticDescription": "最も確率の高いトークンを取る代わりに下書きをサンプリングし、モデルが棄却サンプリングで検証します。オフの場合は貪欲な下書き（デフォルト）を使います。",
+      "nUbatch": "下書きのバッチサイズ",
+      "nUbatchDescription": "下書きコンテキストの物理バッチサイズ。VRAMを節約するには小さくします。0はモデルのバッチサイズを使います（デフォルト）。"
     }
   },
   "dialogs": {

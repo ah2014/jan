@@ -10,7 +10,7 @@
         "minHeight": 740,
         "resizable": true,
         "fullscreen": false,
-        "zoomHotkeysEnabled": true,
+        "zoomHotkeysEnabled": false,
         "center": true,
         "transparent": false,
         "decorations": false,
@@ -20,7 +20,13 @@
   },
   "bundle": {
     "targets": ["deb", "appimage"],
-    "resources": ["resources/LICENSE", "resources/bin/jan-cli", "resources/web-ui"],
+    "resources": [
+      "resources/LICENSE",
+      "resources/bin/jan-cli",
+      "resources/bin/jan-llama-worker",
+      "resources/bin/lib*.so*",
+      "resources/web-ui"
+    ],
     "externalBin": ["resources/bin/uv"],
     "linux": {
       "appimage": {

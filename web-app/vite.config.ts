@@ -64,23 +64,27 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         '@': path.resolve(__dirname, './src'),
-        '@janhq/conversational-extension': path.resolve(__dirname, '../extensions/conversational-extension/src/index.ts'),
-        '@janhq/assistant-extension': path.resolve(__dirname, '../extensions/assistant-extension/src/index.ts'),
-        // Desktop-only extensions; bundled into the app binary via
-        // bundled-extensions.ts in non-web builds. Resolved from source so no
-        // prebuilt dist is required. Tree-shaken out of the web UI build by
-        // the IS_WEB_APP gate in bundled-extensions.ts.
-        '@janhq/download-extension': path.resolve(__dirname, '../extensions/download-extension/src/index.ts'),
-        '@janhq/llamacpp-extension': path.resolve(__dirname, '../extensions/llamacpp-extension/src/index.ts'),
-        '@janhq/rag-extension': path.resolve(__dirname, '../extensions/rag-extension/src/index.ts'),
-        '@janhq/vector-db-extension': path.resolve(__dirname, '../extensions/vector-db-extension/src/index.ts'),
-        '@janhq/mlx-extension': path.resolve(__dirname, '../extensions/mlx-extension/src/index.ts'),
-        // Resolve the core package from its root (-> built dist, same as the
-        // node_modules resolution the desktop build uses). This makes
-        // `@janhq/core` resolvable from the statically-bundled extension
-        // sources too. Requires `yarn build:core` to have produced core/dist.
-        '@janhq/core': path.resolve(__dirname, '../core'),
+        '@janhq/assistant-extension': path.resolve(__dirname, '../extensions/assistant-extension/dist/index.js'),
+        '@janhq/download-extension': path.resolve(__dirname, '../extensions/download-extension/dist/index.js'),
+        '@janhq/llamacpp-extension': path.resolve(__dirname, '../extensions/llamacpp-extension/dist/index.js'),
+        '@janhq/mlx-extension': path.resolve(__dirname, '../extensions/mlx-extension/dist/index.js'),
+        '@janhq/rag-extension': path.resolve(__dirname, '../extensions/rag-extension/dist/index.js'),
+        '@janhq/vector-db-extension': path.resolve(__dirname, '../extensions/vector-db-extension/dist/index.js'),
       },
+    },
+    optimizeDeps: {
+      // Extensions are prebuilt, self-contained ESM dist bundles. Excluding them
+      // stops Vite's dev dep-optimizer from crawling/re-bundling them mid-boot,
+      // which otherwise invalidates the in-flight dynamic import of the service
+      // hub and surfaces as "Importing a module script failed" on cold start.
+      exclude: [
+        '@janhq/assistant-extension',
+        '@janhq/download-extension',
+        '@janhq/llamacpp-extension',
+        '@janhq/mlx-extension',
+        '@janhq/rag-extension',
+        '@janhq/vector-db-extension',
+      ],
     },
     define: {
       IS_TAURI: JSON.stringify(process.env.IS_TAURI),

@@ -1,26 +1,24 @@
 import { useModelProvider } from '@/hooks/useModelProvider'
 
 import { useAppUpdater } from '@/hooks/useAppUpdater'
-import {
-  useGeneralSetting,
-  HUGGINGFACE_TOKEN_SECRET_KEY,
-} from '@/hooks/useGeneralSetting'
+import { useGeneralSetting } from '@/hooks/useGeneralSetting'
 import { useServiceHub } from '@/hooks/useServiceHub'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useMCPServers, DEFAULT_MCP_SETTINGS } from '@/hooks/useMCPServers'
 import { useAssistant } from '@/hooks/useAssistant'
 import { useNavigate } from '@tanstack/react-router'
 import { route } from '@/constants/routes'
 import { useThreads } from '@/hooks/useThreads'
-import { ExtensionManager } from '@/lib/extension'
 import { useLocalApiServer } from '@/hooks/useLocalApiServer'
 import { useAppState } from '@/hooks/useAppState'
-import { AppEvent, events } from '@janhq/core'
+import { AppEvent, events, HUGGINGFACE_TOKEN_SECRET_KEY } from '@janhq/core'
 import { SystemEvent } from '@/types/events'
 import { isDev } from '@/lib/utils'
+import { sweepThreadWorkspaces } from '@/lib/agentTools'
 import { invoke } from '@tauri-apps/api/core'
 import { providerHasRemoteApiKeys, providerRemoteApiKeyChain } from '@/lib/provider-api-keys'
 import { isPlatformTauri } from '@/lib/platform'
+import { useExtensionProviders } from '@/hooks/useExtensionProviders'
 
 type ProviderCustomHeader = {
   header: string
@@ -39,6 +37,9 @@ type RegisterProviderRequest = {
 async function registerRemoteProvider(provider: ModelProvider) {
   // Skip llamacpp - those are local models
   if (provider.provider === 'llamacpp') return
+  // An extension's provider is reachable from the chat only: registering it
+  // would serve it, with the extension's key, to every local API client.
+  if (provider.source) return
 
   const chain = providerRemoteApiKeyChain(provider)
   if (chain.length === 0) {
@@ -75,7 +76,8 @@ async function seedProviderKeysFromKeyring(
 ): Promise<ModelProvider[]> {
   return Promise.all(
     providers.map(async (provider) => {
-      if (provider.provider === 'llamacpp') return provider
+      // Extension providers keep their key in the extension's settings.
+      if (provider.provider === 'llamacpp' || provider.source) return provider
       try {
         const keys = await invoke<string[]>('get_provider_keys', {
           provider: provider.provider,
@@ -146,6 +148,7 @@ const syncRemoteProviders = (serviceHub: ReturnType<typeof useServiceHub>) => {
     if (
       provider.active &&
       provider.provider !== 'llamacpp' &&
+      !provider.source &&
       providerHasRemoteApiKeys(provider)
     ) {
       registerRemoteProvider(provider)
@@ -209,8 +212,12 @@ export function DataProvider() {
   const { setAssistants } = useAssistant()
   const { setThreads } = useThreads()
   const setThreadsLoading = useThreads((s) => s.setThreadsLoading)
+  // The thread fetch re-runs whenever its effect does (StrictMode remount,
+  // a new service hub); the sandbox sweep should run once per session.
+  const sweptWorkspaces = useRef(false)
   const navigate = useNavigate()
   const serviceHub = useServiceHub()
+  useExtensionProviders()
 
   // Local API Server hooks
   const {
@@ -227,6 +234,7 @@ export function DataProvider() {
     lastServerModels,
     setLastServerModels,
     defaultModelLocalApiServer,
+    runInBackground,
   } = useLocalApiServer()
   const setServerStatus = useAppState((state) => state.setServerStatus)
 
@@ -249,7 +257,7 @@ export function DataProvider() {
       }
     })
     // Re-seed the Hugging Face token from the keyring (no longer persisted to
-    // settings storage) into the store + download extension for this session.
+    // settings storage) into the store for this session.
     // Desktop-only (keyring); silently skipped on web.
     if (isPlatformTauri()) {
       invoke<string | null>('get_secret', {
@@ -310,9 +318,9 @@ export function DataProvider() {
   }, [serviceHub])
 
   useEffect(() => {
-    // fetchThreads throws while the Conversational extension is still loading
-    // (startup race, e.g. reload mid-stream). Retry with backoff instead of
-    // letting a single failed fetch leave the thread list permanently empty.
+    // fetchThreads throws while the backend is not ready yet (startup race,
+    // e.g. reload mid-stream). Retry with backoff instead of letting a single
+    // failed fetch leave the thread list permanently empty.
     let cancelled = false
     let attempt = 0
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -333,6 +341,15 @@ export function DataProvider() {
           }
           setThreads(threads)
           setThreadsLoading(false)
+          // Collect agent sandboxes whose thread is gone (crash, or a thread
+          // deleted while the app was closed). Once per session, and only on a
+          // non-empty result: sweeping against an empty list would delete live
+          // sandboxes if this fetch were still a transient not-ready state.
+          // Leftovers then wait for the next startup that does see threads.
+          if (!sweptWorkspaces.current && threads.length > 0) {
+            sweptWorkspaces.current = true
+            sweepThreadWorkspaces(threads.map((t) => t.id))
+          }
         })
         .catch(() => {
           if (cancelled) return
@@ -344,22 +361,10 @@ export function DataProvider() {
           timer = setTimeout(load, Math.min(1000, 150 * attempt))
         })
     }
-    // A late (or re-)registration re-arms the fetch even after the bounded
-    // retries above are exhausted, e.g. when extension setup itself failed
-    // and only recovers later.
-    const unsubscribe = ExtensionManager.getInstance().onRegistrationChange(
-      () => {
-        if (cancelled) return
-        attempt = 0
-        clearTimeout(timer)
-        load()
-      }
-    )
     load()
     return () => {
       cancelled = true
       clearTimeout(timer)
-      unsubscribe()
     }
   }, [serviceHub, setThreads, setThreadsLoading])
 
@@ -415,6 +420,16 @@ export function DataProvider() {
       events.off(AppEvent.onModelImported, handler)
     }
   }, [serviceHub, setProviders])
+
+  // Keep the backend's hide-to-tray-on-close flag in sync with the setting
+  useEffect(() => {
+    serviceHub
+      .app()
+      .setServerRunInBackground(runInBackground)
+      .catch((error) =>
+        console.error('Failed to sync run-in-background setting:', error)
+      )
+  }, [serviceHub, runInBackground])
 
   // Auto-start Local API Server on app startup if enabled
   useEffect(() => {

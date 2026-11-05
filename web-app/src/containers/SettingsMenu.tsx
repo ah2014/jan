@@ -16,12 +16,15 @@ import {
   IconCpu,
   IconWorld,
   IconWorldSearch,
+  IconFolderCode,
   IconPaperclip,
   IconDevices2,
+  IconPuzzle,
 } from '@tabler/icons-react'
 import { useMatches, useNavigate } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
 import { getServiceHub } from '@/hooks/useServiceHub'
+import { isCoworkEnabled } from '@/lib/version'
 
 import { useModelProvider } from '@/hooks/useModelProvider'
 import { getProviderTitle, isLocalProvider } from '@/lib/utils'
@@ -141,7 +144,7 @@ const SettingsMenu = () => {
       >
         <ProvidersAvatar provider={provider} />
         <div className="truncate flex-1">
-          <span>{getProviderTitle(provider.provider)}</span>
+          <span>{getProviderTitle(provider)}</span>
         </div>
       </div>
     )
@@ -209,6 +212,15 @@ const SettingsMenu = () => {
       route: route.settings.web_search,
       icon: IconWorldSearch,
     },
+    ...(isCoworkEnabled()
+      ? [
+          {
+            title: 'common:cowork',
+            route: route.settings.cowork,
+            icon: IconFolderCode,
+          },
+        ]
+      : []),
     {
       title: 'common:keyboardShortcuts',
       route: route.settings.shortcuts,
@@ -222,6 +234,11 @@ const SettingsMenu = () => {
       icon: IconCpu,
     },
     { title: 'common:privacy', route: route.settings.privacy, icon: IconLock },
+    {
+      title: 'common:extensions',
+      route: route.settings.extensions,
+      icon: IconPuzzle,
+    },
   ]
 
   const integrationSettings = [
@@ -358,7 +375,7 @@ const SettingsMenu = () => {
                         >
                           <ProvidersAvatar provider={provider} />
                           <div className="truncate flex-1">
-                            <span>{getProviderTitle(provider.provider)}</span>
+                            <span>{getProviderTitle(provider)}</span>
                           </div>
                         </div>
                       )

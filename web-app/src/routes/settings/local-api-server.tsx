@@ -62,6 +62,8 @@ function LocalAPIServerContent() {
     setVerboseLogs,
     enableOnStartup,
     setEnableOnStartup,
+    runInBackground,
+    setRunInBackground,
     serverHost,
     serverPort,
     setServerPort,
@@ -112,19 +114,24 @@ function LocalAPIServerContent() {
   const [isModelLoading, setIsModelLoading] = useState(false)
 
   const toggleAPIServer = async () => {
-    // Validate API key before starting server
     if (serverStatus === 'stopped') {
+      // The backend refuses to serve an open API on a non-loopback host, since
+      // any device on the network could use it. Say so here, before a model
+      // starts loading for a server that will not start. The key field lives
+      // in the configuration popover, so a toast carries the message.
+      if (serverHost !== '127.0.0.1' && !apiKey?.toString().trim()) {
+        setShowApiKeyError(true)
+        toast.error(t('common:apiKeyRequired'), {
+          description: `Set an API key in Configuration before listening on ${serverHost}, or switch the host to 127.0.0.1.`,
+        })
+        return
+      }
+      setShowApiKeyError(false)
+
       console.log('Starting server with port:', serverPort)
       toast.info('Starting server...', {
         description: `Attempting to start server on port ${serverPort}`,
       })
-
-      // if (!apiKey || apiKey.toString().trim().length === 0) {
-      //   setShowApiKeyError(true)
-      //   return
-      // }
-
-      setShowApiKeyError(false)
 
       setServerStatus('pending')
 
@@ -191,23 +198,25 @@ function LocalAPIServerContent() {
 
           // Port-related errors (highest priority)
           if (errorMsg.includes('Address already in use')) {
-            toast.error('Port has been occupied', {
-              description: `Port ${serverPort} is already in use. Please try a different port.`,
+            toast.error(t('model-errors:serverPortOccupied'), {
+              description: t('model-errors:serverPortOccupiedDescription', {
+                port: serverPort,
+              }),
             })
           }
           // Model-related errors
           else if (errorMsg.includes('Invalid or inaccessible model path')) {
-            toast.error('Invalid or inaccessible model path', {
+            toast.error(t('model-errors:serverInvalidModelPath'), {
               description: errorMsg,
             })
           } else if (errorMsg.includes('model')) {
-            toast.error('Failed to start model', {
+            toast.error(t('model-errors:serverStartModelFailed'), {
               description: errorMsg,
             })
           }
           // Generic server errors
           else {
-            toast.error('Failed to start server', {
+            toast.error(t('model-errors:serverStartFailed'), {
               description: errorMsg,
             })
           }
@@ -454,6 +463,20 @@ function LocalAPIServerContent() {
                     />
                   }
                 />
+                {!IS_MACOS && (
+                  <CardItem
+                    title={t('settings:localApiServer.runInBackground')}
+                    description={t(
+                      'settings:localApiServer.runInBackgroundDesc'
+                    )}
+                    actions={
+                      <Switch
+                        checked={runInBackground}
+                        onCheckedChange={setRunInBackground}
+                      />
+                    }
+                  />
+                )}
                 <CardItem
                   title={t('settings:localApiServer.defaultModel')}
                   description={t('settings:localApiServer.defaultModelDesc')}

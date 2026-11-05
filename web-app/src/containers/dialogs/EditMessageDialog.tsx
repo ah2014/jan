@@ -90,6 +90,9 @@ export function EditMessageDialog({
       size="icon-xs"
       role="button"
       tabIndex={0}
+      data-testid="edit-message-trigger"
+      aria-label={t('common:dialogs.editMessage.title')}
+      title={t('common:dialogs.editMessage.title')}
       disabled={!selectedModel}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
@@ -98,14 +101,14 @@ export function EditMessageDialog({
         }
       }}
     >
-      <IconPencil size={16} />
+      <IconPencil size={16} aria-hidden="true" />
     </Button>
   )
 
   return (
     <Dialog open={isOpen} onOpenChange={setIsOpen}>
       <DialogTrigger asChild>{triggerElement || defaultTrigger}</DialogTrigger>
-      <DialogContent>
+      <DialogContent data-testid="edit-message-dialog">
         <DialogHeader>
           <DialogTitle>{t('common:dialogs.editMessage.title')}</DialogTitle>
           {(keptImages.length > 0 || keptFiles.length > 0) && (
@@ -159,6 +162,7 @@ export function EditMessageDialog({
           )}
           <Textarea
             dir="auto"
+            data-testid="edit-message-input"
             ref={textareaRef}
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -184,6 +188,7 @@ export function EditMessageDialog({
               }
               onClick={handleSave}
               size="sm"
+              data-testid="edit-message-save"
               className="w-full sm:w-auto"
             >
               {t('common:save')}

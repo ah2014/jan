@@ -9,9 +9,8 @@ import { cn } from '@/lib/utils'
 import { useModelProvider } from '@/hooks/useModelProvider'
 import SetupScreen from '@/containers/SetupScreen'
 import { route } from '@/constants/routes'
-import { predefinedProviders } from '@/constants/providers'
 import { isPlatformTauri } from '@/lib/platform/utils'
-import { providerHasRemoteApiKeys } from '@/lib/provider-api-keys'
+import { hasUsableProvider } from '@/lib/providerReadiness'
 import { Link } from '@tanstack/react-router'
 import { Button } from '@/components/ui/button'
 
@@ -46,26 +45,7 @@ function Index() {
   const { setCurrentThreadId } = useThreads()
   useTools()
 
-  // Conditional to check if there are any valid providers
-  // required min 1 api_key or 1 model in llama.cpp or jan provider
-  // Custom providers (not in predefinedProviders) don't require api_key but need models
-  const hasValidProviders = providers.some((provider) => {
-    const isPredefinedProvider = predefinedProviders.some(
-      (p) => p.provider === provider.provider
-    )
-
-    // Custom providers don't need API key validation but must have models
-    if (!isPredefinedProvider) {
-      return provider.models.length > 0
-    }
-
-    // Predefined providers need either API key or models (for llamacpp/jan)
-    return (
-      providerHasRemoteApiKeys(provider) ||
-      (provider.provider === 'llamacpp' && provider.models.length) ||
-      (provider.provider === 'jan' && provider.models.length)
-    )
-  })
+  const hasValidProviders = hasUsableProvider(providers)
 
   useEffect(() => {
     setCurrentThreadId(undefined)
@@ -125,7 +105,7 @@ function Index() {
       >
         <div
           className={cn(
-            'mx-auto w-full md:w-4/5 xl:w-4/6 -mt-20',
+            'mx-auto w-full px-6 md:w-4/5 xl:w-4/6 -mt-20',
           )}
         >
           <div className={cn('text-center mb-4')}>

@@ -13,6 +13,7 @@ import { DialogEditModel } from '@/containers/dialogs/EditModel'
 import { ImportLlamacppModelDialog } from '@/containers/dialogs/ImportLlamacppModelDialog'
 import { ImportMlxModelDialog } from '@/containers/dialogs/ImportMlxModelDialog'
 import { ModelSetting } from '@/containers/ModelSetting'
+import { LlamacppEngineInfo } from '@/containers/LlamacppEngineInfo'
 import { DialogDeleteModel } from '@/containers/dialogs/DeleteModel'
 import { DialogDeleteAllModels } from '@/containers/dialogs/DeleteAllModels'
 import { FavoriteModelAction } from '@/containers/FavoriteModelAction'
@@ -29,16 +30,12 @@ import {
   IconInfoCircle,
   IconLoader,
   IconRefresh,
-  IconUpload,
 } from '@tabler/icons-react'
 import { useDefaultEmbeddingModel } from '@/hooks/useDefaultEmbeddingModel'
 import { toast } from 'sonner'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { predefinedProviders } from '@/constants/providers'
 import { useModelLoad } from '@/hooks/useModelLoad'
-import { useLlamacppDevices } from '@/hooks/useLlamacppDevices'
-import { useBackendUpdater } from '@/hooks/useBackendUpdater'
-import { basenameNoExt } from '@/lib/utils'
 import { useAppState } from '@/hooks/useAppState'
 import { useShallow } from 'zustand/shallow'
 import { DialogAddModel } from '@/containers/dialogs/AddModel'
@@ -52,6 +49,10 @@ import {
   supportsRemoteCatalog,
   fetchTopRemoteModels,
 } from '@/lib/remoteModelCatalog'
+import {
+  refreshFailureText,
+  withUnreachableErrors,
+} from '@/lib/provider-unreachable'
 
 // as route.threadsDetail
 export const Route = createFileRoute('/settings/providers/$providerName')({
@@ -73,9 +74,6 @@ function ProviderDetail() {
   )
   const [loadingModels, setLoadingModels] = useState<string[]>([])
   const [refreshingModels, setRefreshingModels] = useState(false)
-  const [isCheckingBackendUpdate, setIsCheckingBackendUpdate] = useState(false)
-  const [isInstallingBackend, setIsInstallingBackend] = useState(false)
-  const [isInstallingCuda, setIsInstallingCuda] = useState(false)
   const [importingModel, setImportingModel] = useState<string | null>(null)
   const [apiKeysDraft, setApiKeysDraft] = useState('')
   const [baseUrlDraft, setBaseUrlDraft] = useState('')
@@ -84,15 +82,13 @@ function ProviderDetail() {
   const [keyCheckResults, setKeyCheckResults] = useState<
     { index: number; masked: string; status: string; detail: string }[]
   >([])
-  const {
-    checkForUpdate: checkForBackendUpdate,
-    installBackend,
-    installCudaRuntime,
-  } = useBackendUpdater()
   const { providerName } = useParams({ from: Route.id })
   const { getProviderByName, setProviders, updateProvider, addDeletedModels } =
     useModelProvider()
   const provider = getProviderByName(providerName)
+  // An extension's provider takes its key, address and models from the
+  // extension, and leaves when the extension stops: nothing here edits it.
+  const extensionSource = provider?.source
   const isLlamacpp = provider?.provider === 'llamacpp'
   const isPredefinedProvider = useMemo(
     () => predefinedProviders.some((p) => p.provider === providerName),
@@ -154,18 +150,6 @@ function ProviderDetail() {
     clearDefaultEmbeddingModel,
   ])
 
-  // Check if llamacpp/mlx provider needs backend configuration
-  const isBackendKey = (k: string) =>
-    k === 'llamacpp_version' || k === 'llamacpp_backend'
-  const needsBackendConfig =
-    (provider?.provider === 'llamacpp' || provider?.provider === 'mlx') &&
-    provider.settings?.some(
-      (setting) =>
-        isBackendKey(setting.key) &&
-        (setting.controller_props.value === 'none' ||
-          setting.controller_props.value === '' ||
-          !setting.controller_props.value)
-    )
 
   const handleModelImportSuccess = async (importedModelName?: string) => {
     if (importedModelName) {
@@ -494,28 +478,6 @@ function ProviderDetail() {
     }
   }, [apiKeysDraft, maskApiKey, provider?.base_url, serviceHub, t])
 
-  // Auto-refresh provider settings to get updated backend configuration
-  const refreshSettings = useCallback(async () => {
-    if (!provider) return
-
-    try {
-      // Refresh providers to get updated settings from the extension
-      const updatedProviders = await serviceHub.providers().getProviders()
-      setProviders(updatedProviders)
-    } catch (error) {
-      console.error('Failed to refresh settings:', error)
-    }
-  }, [provider, serviceHub, setProviders])
-
-  // Auto-refresh settings when provider changes or when llamacpp needs backend config
-  useEffect(() => {
-    if (provider && needsBackendConfig) {
-      // Auto-refresh every 3 seconds when backend is being configured
-      const intervalId = setInterval(refreshSettings, 3000)
-      return () => clearInterval(intervalId)
-    }
-  }, [provider, needsBackendConfig, refreshSettings])
-
   // Note: settingsChanged event is now handled globally in GlobalEventHandler
   // This ensures all screens receive the event intermediately
 
@@ -531,7 +493,10 @@ function ProviderDetail() {
     try {
       let newModels: Model[]
       if (supportsRemoteCatalog(provider)) {
-        const catalog = await fetchTopRemoteModels(provider, serviceHub.providers().fetch())
+        const catalog = await fetchTopRemoteModels(
+          provider,
+          withUnreachableErrors(serviceHub.providers().fetch())
+        )
         newModels = catalog.map((m) => ({
           id: m.id,
           model: m.id,
@@ -609,10 +574,11 @@ function ProviderDetail() {
         t('providers:refreshModelsFailed', { provider: provider.provider }),
         error
       )
+      const generic = t('providers:refreshModelsFailed', {
+        provider: provider.provider,
+      })
       toast.error(t('providers:models'), {
-        description: t('providers:refreshModelsFailed', {
-          provider: provider.provider,
-        }),
+        description: refreshFailureText(error, generic),
       })
     } finally {
       setRefreshingModels(false)
@@ -658,112 +624,6 @@ function ProviderDetail() {
       })
   }
 
-  const handleCheckForBackendUpdate = useCallback(async () => {
-    if (provider?.provider !== 'llamacpp' && provider?.provider !== 'mlx')
-      return
-
-    setIsCheckingBackendUpdate(true)
-    try {
-      const update = await checkForBackendUpdate(true)
-      if (!update) {
-        toast.info(t('settings:noBackendUpdateAvailable'))
-      }
-      // If update is available, the BackendUpdater dialog will automatically show
-    } catch (error) {
-      console.error('Failed to check for backend updates:', error)
-      toast.error(t('settings:backendUpdateError'))
-    } finally {
-      setIsCheckingBackendUpdate(false)
-    }
-  }, [provider, checkForBackendUpdate, t])
-
-  const handleInstallBackendFromFile = useCallback(async () => {
-    if (provider?.provider !== 'llamacpp' && provider?.provider !== 'mlx')
-      return
-
-    setIsInstallingBackend(true)
-    try {
-      // macOS NSOpenPanel maps filter strings to UTTypes via
-      // typeWithFilenameExtension:, which only accepts single-component
-      // extensions. `.tar.gz` resolves to org.gnu.gnu-zip-tar-archive,
-      // which is a sibling — not a child — of `.gz`'s UTType, so neither
-      // a `tar.gz` nor `gz` filter enables `.tar.gz` files in the picker.
-      // Skip the filter on macOS and revalidate after the pick.
-      const isMac =
-        typeof navigator !== 'undefined' &&
-        navigator.userAgent.toUpperCase().includes('MAC')
-      const selectedFile = await serviceHub.dialog().open({
-        multiple: false,
-        directory: false,
-        filters: isMac
-          ? undefined
-          : [
-              {
-                name: 'Backend Archives',
-                extensions: ['tar.gz', 'zip'],
-              },
-            ],
-      })
-
-      if (selectedFile && typeof selectedFile === 'string') {
-        // Process the file path: replace spaces with dashes and convert to lowercase
-
-        // Install the backend using the llamacpp extension
-        await installBackend(selectedFile)
-
-        // Extract filename from the selected file path and replace spaces with dashes
-        const fileName = basenameNoExt(selectedFile).replace(/\s+/g, '-')
-
-        // Capitalize provider name for display
-        const providerDisplayName =
-          provider?.provider === 'llamacpp' ? 'Llamacpp' : 'MLX'
-
-        toast.success(t('settings:backendInstallSuccess'), {
-          description: `${providerDisplayName} ${fileName} installed`,
-        })
-
-        // Refresh settings to update backend configuration
-        await refreshSettings()
-      }
-    } catch (error) {
-      console.error('Failed to install backend from file:', error)
-      toast.error(t('settings:backendInstallError'), {
-        description:
-          error instanceof Error ? error.message : 'Unknown error occurred',
-      })
-    } finally {
-      setIsInstallingBackend(false)
-    }
-  }, [provider, serviceHub, refreshSettings, t, installBackend])
-
-  const handleInstallCudaRuntime = useCallback(async () => {
-    if (provider?.provider !== 'llamacpp') return
-
-    setIsInstallingCuda(true)
-    try {
-      const selectedFile = await serviceHub.dialog().open({
-        multiple: false,
-        directory: false,
-        filters: [{ name: 'CUDA Runtime Archive', extensions: ['zip', 'gz'] }],
-      })
-
-      if (selectedFile && typeof selectedFile === 'string') {
-        await installCudaRuntime(selectedFile)
-        toast.success(t('settings:backendInstallSuccess'), {
-          description: t('settings:cudaRuntimeInstalled'),
-        })
-      }
-    } catch (error) {
-      console.error('Failed to install CUDA runtime:', error)
-      toast.error(t('settings:backendInstallError'), {
-        description:
-          error instanceof Error ? error.message : 'Unknown error occurred',
-      })
-    } finally {
-      setIsInstallingCuda(false)
-    }
-  }, [provider, serviceHub, t, installCudaRuntime])
-
   return (
     <div className="flex flex-col h-svh w-full">
       <HeaderPage>
@@ -779,7 +639,7 @@ function ProviderDetail() {
           <div className="flex flex-col justify-between gap-4 gap-y-3 w-full">
             <div className="flex items-center justify-between">
               <h1 className="font-medium text-base">
-                {getProviderTitle(providerName)}
+                {getProviderTitle(provider ?? providerName)}
               </h1>
               <Switch
                 checked={provider?.active ?? false}
@@ -787,7 +647,26 @@ function ProviderDetail() {
               />
             </div>
 
+            {extensionSource && (
+              <div className="flex items-start gap-2 rounded-md border border-main-view-fg/10 bg-main-view-fg/5 px-3 py-2 text-xs text-muted-foreground">
+                <IconInfoCircle size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  {t('providers:extensionManaged', {
+                    extension: extensionSource.extensionName,
+                  })}{' '}
+                  <Link
+                    to={route.settings.extension}
+                    params={{ extensionId: extensionSource.extensionId }}
+                    className="underline"
+                  >
+                    {t('providers:openExtensionSettings')}
+                  </Link>
+                </span>
+              </div>
+            )}
+
             {provider &&
+              !extensionSource &&
               !isLocalProvider(provider.provider) &&
               !supportsRemoteCatalog(provider) && (
                 <div className="flex items-start gap-2 rounded-md border border-main-view-fg/10 bg-main-view-fg/5 px-3 py-2 text-xs text-muted-foreground">
@@ -800,6 +679,8 @@ function ProviderDetail() {
                   </span>
                 </div>
               )}
+
+            {isLlamacpp && <LlamacppEngineInfo />}
 
             {provider?.provider === 'mlx' && (
               <div className="flex items-start gap-2 rounded-md border border-main-view-fg/10 bg-main-view-fg/5 px-3 py-2 text-xs text-muted-foreground">
@@ -824,7 +705,8 @@ function ProviderDetail() {
             >
               {/* Settings — hidden for predefined remote providers since
                   api-key + base-url are both surfaced elsewhere / hidden. */}
-              {!(
+              {!extensionSource &&
+                !(
                 isPredefinedProvider &&
                 provider?.provider !== 'llamacpp' &&
                 provider?.provider !== 'mlx'
@@ -849,13 +731,7 @@ function ProviderDetail() {
                   // Use the DynamicController component
                   const actionComponent = (
                     <div className="mt-2">
-                      {needsBackendConfig && isBackendKey(setting.key) ? (
-                        <div className="flex items-center gap-1 text-sm">
-                          <IconLoader size={16} className="animate-spin" />
-                          <span>loading</span>
-                        </div>
-                      ) : (
-                        <DynamicControllerSetting
+                      <DynamicControllerSetting
                           controllerType={setting.controller_type}
                           controllerProps={setting.controller_props}
                           className={cn(setting.key === 'device' && 'hidden')}
@@ -889,31 +765,6 @@ function ProviderDetail() {
                                 updateObj.base_url = newValue
                               }
 
-                              // Reset device setting to empty when backend or version changes
-                              if (isBackendKey(settingKey)) {
-                                const deviceSettingIndex =
-                                  newSettings.findIndex(
-                                    (s) => s.key === 'device'
-                                  )
-
-                                if (deviceSettingIndex !== -1) {
-                                  (
-                                    newSettings[deviceSettingIndex]
-                                      .controller_props as {
-                                      value: string
-                                    }
-                                  ).value = ''
-                                }
-
-                                // Reset llamacpp device activations when backend version changes
-                                if (providerName === 'llamacpp') {
-                                  // Refresh devices to update activation status from provider settings
-                                  const { fetchDevices } =
-                                    useLlamacppDevices.getState()
-                                  fetchDevices()
-                                }
-                              }
-
                               serviceHub
                                 .providers()
                                 .updateSettings(
@@ -935,7 +786,6 @@ function ProviderDetail() {
                             }
                           }}
                         />
-                      )}
                     </div>
                   )
 
@@ -956,99 +806,11 @@ function ProviderDetail() {
                             className="![>p]:text-muted-foreground select-none"
                             content={setting.description}
                             components={{
-                              // Make links open in a new tab
-                              a: ({ ...props }) => {
-                                return (
-                                  <a
-                                    {...props}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                  />
-                                )
-                              },
                               p: ({ ...props }) => (
                                 <p {...props} className="mb-0!" />
                               ),
                             }}
                           />
-                          {setting.key === 'llamacpp_backend' &&
-                            setting.controller_props?.recommended && (
-                              <div className="mt-1 text-sm text-muted-foreground">
-                                <span className="font-medium">
-                                  {setting.controller_props.recommended}
-                                </span>
-                                <span> is the recommended backend.</span>
-                              </div>
-                            )}
-                          {setting.key === 'llamacpp_backend' &&
-                            (provider?.provider === 'llamacpp' ||
-                              provider?.provider === 'mlx') && (
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className={cn(
-                                    isCheckingBackendUpdate &&
-                                      'pointer-events-none'
-                                  )}
-                                  onClick={handleCheckForBackendUpdate}
-                                >
-                                  <IconRefresh
-                                    size={12}
-                                    className={cn(
-                                      'text-muted-foreground',
-                                      isCheckingBackendUpdate && 'animate-spin'
-                                    )}
-                                  />
-                                  <span>
-                                    {isCheckingBackendUpdate
-                                      ? t('settings:checkingForBackendUpdates')
-                                      : t('settings:checkForBackendUpdates')}
-                                  </span>
-                                </Button>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  onClick={handleInstallBackendFromFile}
-                                  disabled={isInstallingBackend}
-                                >
-                                  <IconUpload
-                                    size={12}
-                                    className={cn(
-                                      'text-muted-foreground',
-                                      isInstallingBackend && 'animate-pulse'
-                                    )}
-                                  />
-                                  <span>
-                                    {isInstallingBackend
-                                      ? t('settings:installingBackend')
-                                      : t('settings:installBackendFromFile')}
-                                  </span>
-                                </Button>
-                                {provider?.provider === 'llamacpp' &&
-                                  IS_WINDOWS && (
-                                    <Button
-                                      variant="outline"
-                                      size="sm"
-                                      onClick={handleInstallCudaRuntime}
-                                      disabled={isInstallingCuda}
-                                    >
-                                      <IconUpload
-                                        size={12}
-                                        className={cn(
-                                          'text-muted-foreground',
-                                          isInstallingCuda && 'animate-pulse'
-                                        )}
-                                      />
-                                      <span>
-                                        {isInstallingCuda
-                                          ? t('settings:installingCudaRuntime')
-                                          : t('settings:installCudaRuntime')}
-                                      </span>
-                                    </Button>
-                                  )}
-                              </div>
-                            )}
                         </>
                       }
                       actions={actionComponent}
@@ -1061,6 +823,7 @@ function ProviderDetail() {
               )}
 
               {provider &&
+                !extensionSource &&
                 provider.provider !== 'llamacpp' &&
                 provider.provider !== 'mlx' && (
                   <Card>
@@ -1263,7 +1026,10 @@ function ProviderDetail() {
                       {t('providers:models')}
                     </h1>
                     <div className="flex items-center gap-2">
-                      {provider && provider.provider !== 'llamacpp' && provider.provider !== 'mlx' && (
+                      {provider &&
+                        !extensionSource &&
+                        provider.provider !== 'llamacpp' &&
+                        provider.provider !== 'mlx' && (
                         <>
                           <Button
                             variant="secondary"
@@ -1389,10 +1155,12 @@ function ProviderDetail() {
                                 providerHasRemoteApiKeys(provider))) && (
                               <FavoriteModelAction model={model} />
                             )}
-                            <DialogDeleteModel
-                              provider={provider}
-                              modelId={model.id}
-                            />
+                            {!extensionSource && (
+                              <DialogDeleteModel
+                                provider={provider}
+                                modelId={model.id}
+                              />
+                            )}
                             {provider &&
                               (provider.provider === 'llamacpp' ||
                                 provider.provider === 'mlx') && (
@@ -1443,7 +1211,9 @@ function ProviderDetail() {
                       </h6>
                     </div>
                     <p className="text-muted-foreground mt-1 text-xs leading-relaxed">
-                      {provider && !isLocalProvider(provider.provider) ? (
+                      {extensionSource ? (
+                        t('providers:noModelFoundExtensionDesc')
+                      ) : provider && !isLocalProvider(provider.provider) ? (
                         t('providers:noModelFoundRemoteDesc')
                       ) : (
                         <>
