@@ -48,61 +48,53 @@ export const HOST_BUILTINS: BuiltinExtension[] = [
     }),
     load: () => import('@janhq/assistant-extension'),
   },
-  {
-    manifest: manifestOf({
-      name: download.name,
-      version: download.version,
-      jan: download.jan,
-    }),
-    load: () => import('@janhq/download-extension'),
-  },
-  {
-    manifest: manifestOf({
-      name: llamacpp.name,
-      version: llamacpp.version,
-      jan: llamacpp.jan,
-    }),
-    // No dependsOn download: the engines look the Downloads service up per
-    // download, so a failed download built-in must not take inference down.
-    load: () => import('@janhq/llamacpp-extension'),
-  },
-  {
-    manifest: manifestOf({
-      name: vectorDb.name,
-      version: vectorDb.version,
-      jan: vectorDb.jan,
-    }),
-    load: () => import('@janhq/vector-db-extension'),
-  },
-  {
-    manifest: manifestOf({
-      name: rag.name,
-      version: rag.version,
-      // JSON imports widen the control `type` literals to string; the
-      // builtins test checks this against validateManifest.
-      jan: rag.jan as Omit<ValidatedManifest, 'name' | 'version'>,
-    }),
-    load: () => import('@janhq/rag-extension'),
-    dependsOn: ['jan.vector-db'],
-  },
 ]
 
-// The standalone web UI build (IS_WEB_APP=true, served by the LAN web
-// server) runs in a plain browser session: the desktop-only built-ins pull
-// native Tauri plugins and are dead-code eliminated there, same trick as
-// the IS_MACOS gate below. Their invokes would go through the web server's
-// /api/invoke proxy, so the browser-safe assistant built-in stays.
-if (IS_WEB_APP) {
-  const desktopOnly = new Set([
-    '@janhq/download-extension',
-    '@janhq/llamacpp-extension',
-    '@janhq/vector-db-extension',
-    '@janhq/rag-extension',
-  ])
-  for (let i = HOST_BUILTINS.length - 1; i >= 0; i--) {
-    if (desktopOnly.has(HOST_BUILTINS[i].manifest.name))
-      HOST_BUILTINS.splice(i, 1)
-  }
+// The desktop-only built-ins pull native Tauri plugins that don't run in a
+// plain browser. IS_WEB_APP is a build-time constant (the same trick as the
+// IS_MACOS gate below), so in the standalone web UI build — served by the
+// LAN web server — their import()s are dead-code eliminated and never enter
+// the bundle graph; only the browser-safe assistant built-in stays.
+if (!IS_WEB_APP) {
+  HOST_BUILTINS.push(
+    {
+      manifest: manifestOf({
+        name: download.name,
+        version: download.version,
+        jan: download.jan,
+      }),
+      load: () => import('@janhq/download-extension'),
+    },
+    {
+      manifest: manifestOf({
+        name: llamacpp.name,
+        version: llamacpp.version,
+        jan: llamacpp.jan,
+      }),
+      // No dependsOn download: the engines look the Downloads service up per
+      // download, so a failed download built-in must not take inference down.
+      load: () => import('@janhq/llamacpp-extension'),
+    },
+    {
+      manifest: manifestOf({
+        name: vectorDb.name,
+        version: vectorDb.version,
+        jan: vectorDb.jan,
+      }),
+      load: () => import('@janhq/vector-db-extension'),
+    },
+    {
+      manifest: manifestOf({
+        name: rag.name,
+        version: rag.version,
+        // JSON imports widen the control `type` literals to string; the
+        // builtins test checks this against validateManifest.
+        jan: rag.jan as Omit<ValidatedManifest, 'name' | 'version'>,
+      }),
+      load: () => import('@janhq/rag-extension'),
+      dependsOn: ['jan.vector-db'],
+    }
+  )
 }
 
 // The MLX extension depends on @janhq/tauri-plugin-mlx-api, which only exists

@@ -187,6 +187,7 @@ pub async fn upsert_provider_model_capabilities(
         models: vec![],
         model_capabilities: Default::default(),
         api_type: None,
+        compaction_ratio: None,
     });
     if capabilities.is_empty() {
         entry.model_capabilities.remove(model_id);

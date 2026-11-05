@@ -64,6 +64,58 @@ Denies the begin_engine_restart command without any pre-configured scope.
 <tr>
 <td>
 
+`llamacpp:allow-build-backend-download-items`
+
+</td>
+<td>
+
+Enables the build_backend_download_items command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-build-backend-download-items`
+
+</td>
+<td>
+
+Denies the build_backend_download_items command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:allow-check-backend-installed`
+
+</td>
+<td>
+
+Enables the check_backend_installed command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-check-backend-installed`
+
+</td>
+<td>
+
+Denies the check_backend_installed command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `llamacpp:allow-cleanup-llama-processes`
 
 </td>
@@ -220,6 +272,32 @@ Denies the erase_thread_slot_state command without any pre-configured scope.
 <tr>
 <td>
 
+`llamacpp:allow-fetch-remote-supported-backends`
+
+</td>
+<td>
+
+Enables the fetch_remote_supported_backends command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-fetch-remote-supported-backends`
+
+</td>
+<td>
+
+Denies the fetch_remote_supported_backends command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `llamacpp:allow-find-gguf-tensors`
 
 </td>
@@ -272,6 +350,32 @@ Denies the find_session_by_model command without any pre-configured scope.
 <tr>
 <td>
 
+`llamacpp:allow-force-kill-router-tree`
+
+</td>
+<td>
+
+Enables the force_kill_router_tree command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-force-kill-router-tree`
+
+</td>
+<td>
+
+Denies the force_kill_router_tree command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `llamacpp:allow-force-stop-engine`
 
 </td>
@@ -317,6 +421,58 @@ Enables the generate_api_key command without any pre-configured scope.
 <td>
 
 Denies the generate_api_key command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:allow-get-backend-dir`
+
+</td>
+<td>
+
+Enables the get_backend_dir command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-get-backend-dir`
+
+</td>
+<td>
+
+Denies the get_backend_dir command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:allow-get-backend-exe-path`
+
+</td>
+<td>
+
+Enables the get_backend_exe_path command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-get-backend-exe-path`
+
+</td>
+<td>
+
+Denies the get_backend_exe_path command without any pre-configured scope.
 
 </td>
 </tr>
@@ -395,6 +551,32 @@ Enables the get_loaded_models command without any pre-configured scope.
 <td>
 
 Denies the get_loaded_models command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:allow-get-router-info`
+
+</td>
+<td>
+
+Enables the get_router_info command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-get-router-info`
+
+</td>
+<td>
+
+Denies the get_router_info command without any pre-configured scope.
 
 </td>
 </tr>
@@ -506,6 +688,58 @@ Denies the reload_engine_models command without any pre-configured scope.
 <tr>
 <td>
 
+`llamacpp:allow-reload-router-models`
+
+</td>
+<td>
+
+Enables the reload_router_models command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-reload-router-models`
+
+</td>
+<td>
+
+Denies the reload_router_models command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:allow-router-slots-idle`
+
+</td>
+<td>
+
+Enables the router_slots_idle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-router-slots-idle`
+
+</td>
+<td>
+
+Denies the router_slots_idle command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `llamacpp:allow-start-engine`
 
 </td>
@@ -525,6 +759,32 @@ Enables the start_engine command without any pre-configured scope.
 <td>
 
 Denies the start_engine command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:allow-start-router`
+
+</td>
+<td>
+
+Enables the start_router command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-start-router`
+
+</td>
+<td>
+
+Denies the start_router command without any pre-configured scope.
 
 </td>
 </tr>
@@ -558,6 +818,58 @@ Denies the stop_engine command without any pre-configured scope.
 <tr>
 <td>
 
+`llamacpp:allow-stop-router`
+
+</td>
+<td>
+
+Enables the stop_router command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-stop-router`
+
+</td>
+<td>
+
+Denies the stop_router command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:allow-try-graceful-stop-router`
+
+</td>
+<td>
+
+Enables the try_graceful_stop_router command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-try-graceful-stop-router`
+
+</td>
+<td>
+
+Denies the try_graceful_stop_router command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
 `llamacpp:allow-unload-llama-model`
 
 </td>
@@ -577,6 +889,32 @@ Enables the unload_llama_model command without any pre-configured scope.
 <td>
 
 Denies the unload_llama_model command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:allow-verify-backend-installation`
+
+</td>
+<td>
+
+Enables the verify_backend_installation command without any pre-configured scope.
+
+</td>
+</tr>
+
+<tr>
+<td>
+
+`llamacpp:deny-verify-backend-installation`
+
+</td>
+<td>
+
+Denies the verify_backend_installation command without any pre-configured scope.
 
 </td>
 </tr>

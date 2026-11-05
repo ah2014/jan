@@ -1436,7 +1436,7 @@ export class ModelFactory {
     modelId: string,
     provider: ProviderObject,
     parameters: Record<string, unknown> = {},
-    baseFetch: typeof globalThis.fetch = getRuntimeFetch()
+    baseFetch?: typeof globalThis.fetch
   ): LanguageModel {
     const headers: Record<string, string> = {}
 
@@ -1452,16 +1452,21 @@ export class ModelFactory {
       headers['Authorization'] = `Bearer ${keyChain[0]}`
     }
 
+    // An extension-contributed provider runs every request on the extension's
+    // checked network path (upstream); otherwise route through the inference
+    // fetch, which is the runtime fetch on desktop and the web-server proxy
+    // on the standalone web UI.
+    const effectiveFetch = baseFetch ?? getInferenceFetch(provider)
     let fetchImpl: typeof globalThis.fetch =
       keyChain.length > 1
         ? createApiKeyRotatingFetch(
-            getInferenceFetch(provider),
+            effectiveFetch,
             keyChain,
             parameters,
             'authorization-bearer',
             true
           )
-        : createCustomFetch(getInferenceFetch(provider), parameters, false, undefined, true)
+        : createCustomFetch(effectiveFetch, parameters, false, undefined, true)
 
     // Groq's API rejects assistant `reasoning` fields, so it always strips
     // regardless of the toggle; other providers honor the global setting.

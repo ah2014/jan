@@ -422,6 +422,9 @@ pub(crate) fn load_global_config() -> Result<HashMap<String, ProviderConfig>, St
                         .collect(),
                     models: entry.models,
                     api_type: entry.api_type,
+                    // Per-model user overrides are a web-UI/desktop-store
+                    // concept; `~/.jan/config.toml` never carries them.
+                    model_capabilities: Default::default(),
                     // `~/.jan/config.toml` describes the desktop app's
                     // providers, which size compaction from the project's
                     // `[provider]`/`[agent]` sections instead.
