@@ -157,10 +157,16 @@ export const DialogEditModel = ({
               modelUpdate.capabilities as unknown as string[],
           })
         } catch (e) {
+          // The in-browser change still applies for this session; warn that it
+          // may not survive a reload / sync to other devices.
           console.warn(
             '[EditModel] failed to persist capabilities to backend',
             e
           )
+          toast.warning('Capabilities saved locally', {
+            description:
+              'Could not sync the change to the backend — it may be lost after a reload.',
+          })
         }
       }
 

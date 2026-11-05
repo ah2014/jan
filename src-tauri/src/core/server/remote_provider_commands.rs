@@ -159,6 +159,10 @@ pub async fn remove_provider_config(app_handle: &AppHandle, provider: &str) -> R
 /// Set per-model capabilities (vision/audio/…) for a provider. Targeted
 /// read-modify-write: preserves the provider's keys/base_url and only updates
 /// the one model entry — safe for the web UI, which doesn't hold the API key.
+/// Creates a minimal entry for an unknown provider so the web UI (where the
+/// provider may not be registered yet) can still persist capability edits;
+/// the stub is harmless — no keys, no models — and is filled in with real
+/// operational fields the next time the provider is registered.
 pub async fn upsert_provider_model_capabilities(
     app_handle: &AppHandle,
     provider: &str,
@@ -171,15 +175,47 @@ pub async fn upsert_provider_model_capabilities(
     let mut g = provider_configs.lock().await;
 
     let mut map = load_provider_configs(app_handle);
-    let entry = map
-        .get_mut(provider)
-        .ok_or_else(|| format!("Provider '{provider}' is not configured"))?;
+    let entry = map.entry(provider.to_string()).or_insert_with(|| ProviderConfig {
+        provider: provider.to_string(),
+        api_key: None,
+        api_keys: vec![],
+        base_url: None,
+        custom_headers: vec![],
+        models: vec![],
+        model_capabilities: Default::default(),
+        api_type: None,
+    });
     if capabilities.is_empty() {
         entry.model_capabilities.remove(model_id);
     } else {
         entry.model_capabilities
             .insert(model_id.to_string(), capabilities);
     }
+    save_provider_configs(app_handle, &map);
+    *g = map;
+    Ok(())
+}
+
+/// Replace a provider's model id list. Targeted read-modify-write like
+/// [`upsert_provider_model_capabilities`]: preserves keys / base_url /
+/// custom headers / per-model capabilities, so the web UI (which never holds
+/// the API key) can persist model additions and removals into the shared
+/// `providers.json` without clobbering the desktop-configured secret.
+pub async fn upsert_provider_models(
+    app_handle: &AppHandle,
+    provider: &str,
+    models: Vec<String>,
+) -> Result<(), String> {
+    use crate::core::server::provider_store::{load_provider_configs, save_provider_configs};
+
+    let provider_configs = app_handle.state::<AppState>().provider_configs.clone();
+    let mut g = provider_configs.lock().await;
+
+    let mut map = load_provider_configs(app_handle);
+    let entry = map
+        .get_mut(provider)
+        .ok_or_else(|| format!("Provider '{provider}' is not configured"))?;
+    entry.models = models;
     save_provider_configs(app_handle, &map);
     *g = map;
     Ok(())
@@ -216,6 +252,19 @@ pub async fn set_provider_model_capabilities(
     capabilities: Vec<String>,
 ) -> Result<(), String> {
     upsert_provider_model_capabilities(&app_handle, &provider, &model_id, capabilities).await
+}
+
+/// Replace a provider's model id list (keys/base_url preserved). Used by the
+/// web UI's write-through so model additions/removals made in the browser land
+/// in the shared `providers.json`.
+#[tauri::command]
+pub async fn set_provider_models(
+    app_handle: AppHandle,
+    _state: State<'_, AppState>,
+    provider: String,
+    models: Vec<String>,
+) -> Result<(), String> {
+    upsert_provider_models(&app_handle, &provider, models).await
 }
 
 /// Replace the per-model sampling defaults the API server injects for MLX

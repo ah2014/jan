@@ -46,7 +46,7 @@ use crate::core::filesystem::attach_path_commands::{
 };
 use crate::core::server::remote_provider_commands::{
     remove_provider_config, upsert_provider_config, upsert_provider_model_capabilities,
-    RegisterProviderRequest,
+    upsert_provider_models, RegisterProviderRequest,
 };
 use crate::core::state::{AppState, ProviderConfig};
 use crate::core::threads::commands::{
@@ -525,6 +525,26 @@ async fn dispatch(
                 capabilities,
             )
             .await?;
+            Ok(json!({}))
+        }
+
+        "setProviderModels" => {
+            // Targeted update like setProviderModelCapabilities: replaces the
+            // provider's model id list while preserving its API key / base_url
+            // (the web UI never holds the key, so a full re-register would
+            // wipe it). Errors when the provider isn't configured yet — the
+            // caller then falls back to a full registerProviderConfig.
+            let provider = arg_str(args, &["provider"])?;
+            let models = args
+                .get("models")
+                .and_then(|v| v.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect::<Vec<_>>()
+                })
+                .ok_or("Missing 'models' array")?;
+            upsert_provider_models(app_handle, &provider, models).await?;
             Ok(json!({}))
         }
 

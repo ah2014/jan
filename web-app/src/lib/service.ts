@@ -36,6 +36,10 @@ export const AppRoutes = [
   // provider's key/base_url, so the web UI (which never holds the key) can
   // persist model settings into the shared `providers.json`.
   'setProviderModelCapabilities',
+  // Targeted model-list update (add/remove models from a provider). Like the
+  // capability override it preserves the provider's key/base_url; the web UI
+  // uses it to write model edits made in the browser into `providers.json`.
+  'setProviderModels',
   // Remote-attach picker (`~` in the composer): browse/attach files living on
   // the backend host without uploading. Allow-list of root folders lives in
   // <jan_data_folder>/allowed_attach_paths.json (hand-edited; no UI).

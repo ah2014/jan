@@ -124,13 +124,21 @@ async function applyKeyringKeys(): Promise<void> {
 let registeredProviderNames = new Set<string>()
 
 // Effect to sync remote providers when providers change
-const syncRemoteProviders = () => {
-  // Desktop-only: this pushes the GUI's in-memory provider state into the
-  // backend via the Tauri command. On web the server's providers.json is
-  // authoritative (written via the /api/invoke shim when the user edits a
-  // provider), so re-registering here would only clobber keys with the redacted
-  // web-side copies. The Tauri `invoke` is also unavailable in a browser.
-  if (!isPlatformTauri()) return
+const syncRemoteProviders = (serviceHub: ReturnType<typeof useServiceHub>) => {
+  if (!isPlatformTauri()) {
+    // Web write-through: mirror model-list changes made in the browser into
+    // the shared backend store (providers.json) so they apply to the desktop
+    // app and other devices instead of living only in this browser's
+    // localStorage. The service dedupes no-op calls (it fires on every store
+    // change). Capabilities and API keys go through their own targeted paths
+    // (EditModel / updateSettings), and nothing is ever unregistered from the
+    // browser — a desktop-registered provider must survive web toggles.
+    const providers = useModelProvider.getState().providers
+    for (const provider of providers) {
+      void serviceHub.providers().syncProviderToBackend(provider)
+    }
+    return
+  }
   const providers = useModelProvider.getState().providers
   const currentActive = new Set<string>()
 
@@ -358,9 +366,9 @@ export function DataProvider() {
   // Sync remote providers with backend when providers change
   const providers = useModelProvider((s) => s.providers)
   useEffect(() => {
-    syncRemoteProviders()
+    syncRemoteProviders(serviceHub)
     syncModelParamDefaults()
-  }, [providers])
+  }, [providers, serviceHub])
 
   // Check for app updates - initial check and periodic interval
   useEffect(() => {
@@ -398,7 +406,7 @@ export function DataProvider() {
       serviceHub.providers().getProviders().then(async (fetched) => {
         setProviders(fetched)
         await applyKeyringKeys()
-        syncRemoteProviders()
+        syncRemoteProviders(serviceHub)
         syncModelParamDefaults()
       })
     }

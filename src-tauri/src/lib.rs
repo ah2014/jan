@@ -97,6 +97,7 @@ macro_rules! invoke_commands_with_extras {
         core::server::remote_provider_commands::get_provider_keys,
         core::server::remote_provider_commands::list_provider_configs,
         core::server::remote_provider_commands::set_provider_model_capabilities,
+        core::server::remote_provider_commands::set_provider_models,
         // MCP commands
         core::mcp::commands::get_tools,
         core::mcp::commands::get_tools_for_servers,

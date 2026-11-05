@@ -13,7 +13,23 @@
  */
 
 import { predefinedProviders } from '@/constants/providers'
+import { useModelProvider } from '@/hooks/useModelProvider'
+import { isLocalProvider } from '@/lib/utils'
+import {
+  API_KEY_FALLBACKS_SETTING_KEY,
+  parseApiKeyFallbacks,
+  providerRemoteApiKeyChain,
+} from '@/lib/provider-api-keys'
 import { DefaultProvidersService } from './default'
+
+/**
+ * Local inference engines never belong in the shared remote-provider store:
+ * their model lists come from the local disk / engine, and on web there are no
+ * engines at all, so `isLocalProvider` (which probes the live engine manager)
+ * is supplemented with the well-known engine provider names.
+ */
+const isLocalEngineProvider = (name: string): boolean =>
+  name === 'llamacpp' || name === 'mlx' || !!isLocalProvider(name)
 
 /**
  * Redacted provider config as returned by the backend's `listProviderConfigs`.
@@ -28,6 +44,48 @@ type BackendProviderConfig = {
   models: string[]
   /** Per-model capability overrides (vision/audio/…), keyed by model id. */
   model_capabilities?: Record<string, string[]>
+}
+
+/** Provider names present in the backend's `providers.json` at the last fetch. */
+const backendRegistry = new Set<string>()
+
+/** Last model-id list known to be in the backend, per provider. Lets
+ * `syncProviderToBackend` skip no-op writes (it fires on every store change). */
+const lastSyncedModelIds = new Map<string, string[]>()
+
+/** Serialize syncs per provider so rapid edits can't write out of order. */
+const syncChains = new Map<string, Promise<void>>()
+
+function modelIdsOf(provider: ModelProvider): string[] {
+  const ids = (provider.models ?? [])
+    .map((m) => (typeof m.id === 'string' && m.id ? m.id : m.model))
+    .filter((id): id is string => typeof id === 'string' && id.length > 0)
+  return Array.from(new Set(ids))
+}
+
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id, i) => id === b[i])
+}
+
+/** Full registration payload for a provider the backend doesn't know yet. */
+async function registerProviderFromState(
+  provider: ModelProvider,
+  models: string[]
+): Promise<void> {
+  const chain = providerRemoteApiKeyChain(provider)
+  await window.core.api.registerProviderConfig({
+    provider: provider.provider,
+    api_key: chain[0] ?? null,
+    api_keys: chain.slice(1),
+    base_url: provider.base_url ?? null,
+    custom_headers: (provider.custom_header ?? []).map((h) => ({
+      header: h.header,
+      value: h.value,
+    })),
+    models,
+    ...(provider.api_type ? { api_type: provider.api_type } : {}),
+  })
+  backendRegistry.add(provider.provider)
 }
 
 export class WebProvidersService extends DefaultProvidersService {
@@ -53,6 +111,13 @@ export class WebProvidersService extends DefaultProvidersService {
         '[web] Failed to load provider configs from backend; showing templates only.',
         e
       )
+    }
+
+    // Refresh the write-through bookkeeping from the authoritative store.
+    backendRegistry.clear()
+    for (const c of configs) {
+      backendRegistry.add(c.provider)
+      lastSyncedModelIds.set(c.provider, [...(c.models ?? [])])
     }
 
     for (const c of configs) {
@@ -98,7 +163,56 @@ export class WebProvidersService extends DefaultProvidersService {
       })
     }
 
+    // Providers not in the backend start their sync baseline from the list we
+    // just handed the store, so only real user edits trigger a write.
+    for (const p of merged.values()) {
+      if (!lastSyncedModelIds.has(p.provider)) {
+        lastSyncedModelIds.set(p.provider, modelIdsOf(p))
+      }
+    }
+
     return Array.from(merged.values())
+  }
+
+  /**
+   * Write-through for the browser: push the provider's model list into the
+   * shared `providers.json`. Registered providers get a targeted
+   * `setProviderModels` (their API key / base_url are preserved server-side);
+   * unknown providers are registered in full — the browser still holds the
+   * base_url (and, right after creation, the typed API key).
+   */
+  async syncProviderToBackend(provider: ModelProvider): Promise<void> {
+    if (isLocalEngineProvider(provider.provider)) return
+    const name = provider.provider
+    const ids = modelIdsOf(provider)
+    const prev = lastSyncedModelIds.get(name)
+    if (prev && sameIds(prev, ids)) return
+
+    const run = (syncChains.get(name) ?? Promise.resolve())
+      .then(async () => {
+        if (backendRegistry.has(name)) {
+          await window.core.api.setProviderModels({
+            provider: name,
+            models: ids,
+          })
+        } else {
+          await registerProviderFromState(provider, ids)
+        }
+        lastSyncedModelIds.set(name, ids)
+      })
+      .catch((e) => {
+        // Leave the baseline untouched so the next store change retries.
+        console.warn(`[web] Failed to sync models for '${name}' to backend:`, e)
+      })
+    // Keep the chain alive even when a link fails.
+    syncChains.set(
+      name,
+      run.then(
+        () => undefined,
+        () => undefined
+      )
+    )
+    await run
   }
 
   async fetchModelsFromProvider(provider: ModelProvider): Promise<string[]> {
@@ -166,11 +280,71 @@ export class WebProvidersService extends DefaultProvidersService {
   }
 
   async updateSettings(
-    _providerName: string,
-    _settings: ProviderSetting[]
+    providerName: string,
+    settings: ProviderSetting[]
   ): Promise<void> {
-    // Web has no runtime engines; engine settings are desktop-only.
-    void _providerName
-    void _settings
+    // The web has no runtime engines; the only provider settings that matter
+    // here are the API-key chain entries. Persist them into the shared backend
+    // store: the browser never keeps keys (redacted on read, stripped from
+    // localStorage), and /api/proxy reads them server-side, so the backend is
+    // the only place a web-entered key can survive a refresh.
+    const provider = useModelProvider.getState().getProviderByName(providerName)
+    if (!provider || isLocalEngineProvider(providerName)) return
+    const valueOf = (key: string) =>
+      settings.find((s) => s.key === key)?.controller_props?.value
+    const primary =
+      typeof valueOf('api-key') === 'string'
+        ? (valueOf('api-key') as string).trim()
+        : ''
+    const fallbacks = parseApiKeyFallbacks(
+      valueOf(API_KEY_FALLBACKS_SETTING_KEY)
+    )
+    const chain = [...(primary ? [primary] : []), ...fallbacks]
+    try {
+      await window.core.api.registerProviderConfig({
+        provider: providerName,
+        api_key: chain[0] ?? null,
+        api_keys: chain.slice(1),
+        base_url: provider.base_url ?? null,
+        custom_headers: (provider.custom_header ?? []).map((h) => ({
+          header: h.header,
+          value: h.value,
+        })),
+        models: modelIdsOf(provider),
+        ...(provider.api_type ? { api_type: provider.api_type } : {}),
+      })
+      backendRegistry.add(providerName)
+    } catch (e) {
+      console.warn(
+        `[web] Failed to persist settings for '${providerName}' to backend:`,
+        e
+      )
+    }
+  }
+
+  async deleteProviderKeys(providerName: string): Promise<void> {
+    // Clearing the key is an explicit user action: push an empty key chain to
+    // the shared store so the server-side proxy stops using the old key.
+    const provider = useModelProvider.getState().getProviderByName(providerName)
+    if (!provider || !backendRegistry.has(providerName)) return
+    try {
+      await window.core.api.registerProviderConfig({
+        provider: providerName,
+        api_key: null,
+        api_keys: [],
+        base_url: provider.base_url ?? null,
+        custom_headers: (provider.custom_header ?? []).map((h) => ({
+          header: h.header,
+          value: h.value,
+        })),
+        models: modelIdsOf(provider),
+        ...(provider.api_type ? { api_type: provider.api_type } : {}),
+      })
+    } catch (e) {
+      console.warn(
+        `[web] Failed to clear stored keys for '${providerName}':`,
+        e
+      )
+    }
   }
 }

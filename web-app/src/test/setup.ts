@@ -85,6 +85,7 @@ const mockServiceHub = {
     updateProvider: vi.fn().mockResolvedValue(undefined),
     getProvider: vi.fn().mockResolvedValue(null),
     fetchModelsFromProvider: vi.fn().mockResolvedValue([]),
+    syncProviderToBackend: vi.fn().mockResolvedValue(undefined),
   }),
   models: () => ({
     getModels: vi.fn().mockResolvedValue([]),

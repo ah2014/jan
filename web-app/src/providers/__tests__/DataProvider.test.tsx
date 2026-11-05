@@ -25,6 +25,9 @@ const h = vi.hoisted(() => {
     navigate: vi.fn(),
     invoke: vi.fn().mockResolvedValue(undefined),
     isDev: vi.fn().mockReturnValue(false),
+    // DataProvider runs the web branch by default in jsdom (no Tauri bridge);
+    // desktop-path tests flip this to true.
+    isTauri: vi.fn().mockReturnValue(false),
     providerHasRemoteApiKeys: vi.fn().mockReturnValue(true),
     providerRemoteApiKeyChain: vi.fn().mockReturnValue(['key-1']),
     eventsOn: vi.fn(),
@@ -122,6 +125,10 @@ vi.mock('@/lib/utils', () => ({
   isDev: () => h.isDev(),
 }))
 
+vi.mock('@/lib/platform', () => ({
+  isPlatformTauri: () => h.isTauri(),
+}))
+
 vi.mock('@/lib/provider-api-keys', () => ({
   providerHasRemoteApiKeys: (p: unknown) => h.providerHasRemoteApiKeys(p),
   providerRemoteApiKeyChain: (p: unknown) => h.providerRemoteApiKeyChain(p),
@@ -154,6 +161,7 @@ const hubState = vi.hoisted(() => ({
   deeplinkOnOpenUrl: vi.fn().mockResolvedValue(vi.fn()),
   eventsListen: vi.fn(),
   getProviders: vi.fn().mockResolvedValue([]),
+  syncProviderToBackend: vi.fn().mockResolvedValue(undefined),
   getMCPConfig: vi.fn().mockResolvedValue({ mcpServers: { a: 1 }, mcpSettings: { s: 1 } }),
   getAssistants: vi.fn().mockResolvedValue([]),
   fetchThreads: vi.fn().mockResolvedValue([]),
@@ -165,7 +173,10 @@ const hubState = vi.hoisted(() => ({
 
 vi.mock('@/hooks/useServiceHub', () => {
   const hub = {
-    providers: () => ({ getProviders: hubState.getProviders }),
+    providers: () => ({
+      getProviders: hubState.getProviders,
+      syncProviderToBackend: hubState.syncProviderToBackend,
+    }),
     mcp: () => ({ getMCPConfig: hubState.getMCPConfig }),
     assistants: () => ({ getAssistants: hubState.getAssistants }),
     threads: () => ({ fetchThreads: hubState.fetchThreads }),
@@ -198,6 +209,7 @@ import { DataProvider } from '../DataProvider'
 
 const resetHubState = () => {
   hubState.getProviders.mockResolvedValue([])
+  hubState.syncProviderToBackend.mockResolvedValue(undefined)
   hubState.getMCPConfig.mockResolvedValue({ mcpServers: { a: 1 }, mcpSettings: { s: 1 } })
   hubState.getAssistants.mockResolvedValue([])
   hubState.fetchThreads.mockResolvedValue([])
@@ -219,6 +231,7 @@ describe('DataProvider', () => {
     h.threadsInStore = {}
     h.registrationListeners.clear()
     h.isDev.mockReturnValue(false)
+    h.isTauri.mockReturnValue(false)
     h.providerHasRemoteApiKeys.mockReturnValue(true)
     h.providerRemoteApiKeyChain.mockReturnValue(['key-1'])
     h.invoke.mockResolvedValue(undefined)
@@ -378,6 +391,7 @@ describe('DataProvider', () => {
   })
 
   it('registers remote providers with the backend for active providers', async () => {
+    h.isTauri.mockReturnValue(true) // desktop write-through branch
     const fetched = [
       {
         provider: 'openai',
@@ -417,6 +431,7 @@ describe('DataProvider', () => {
   })
 
   it('skips registration when provider has no API key chain', async () => {
+    h.isTauri.mockReturnValue(true) // desktop write-through branch
     h.providerRemoteApiKeyChain.mockReturnValue([])
     h.providers = [
       { provider: 'openai', active: true, models: [], custom_header: [] },
@@ -430,6 +445,7 @@ describe('DataProvider', () => {
   })
 
   it('logs provider registration failures without throwing', async () => {
+    h.isTauri.mockReturnValue(true) // desktop write-through branch
     const err = vi.spyOn(console, 'error').mockImplementation(() => {})
     h.invoke.mockRejectedValue(new Error('nope'))
     const fetched = [
@@ -445,6 +461,30 @@ describe('DataProvider', () => {
       )
     })
     err.mockRestore()
+  })
+
+  it('fans out provider syncs to the backend service on web', async () => {
+    // Web branch: every store change fans out to the providers service, which
+    // owns the dedupe + targeted-write logic (see web.writeThrough.test.ts).
+    const fetched = [
+      { provider: 'openai', active: true, models: [{ id: 'gpt-4' }], custom_header: [] },
+      { provider: 'llamacpp', active: true, models: [], custom_header: [] },
+    ]
+    hubState.getProviders.mockResolvedValue(fetched)
+    h.providers = fetched
+    render(<DataProvider />)
+    await waitFor(() => {
+      expect(hubState.syncProviderToBackend).toHaveBeenCalledTimes(2)
+    })
+    const synced = hubState.syncProviderToBackend.mock.calls.map(
+      (c) => (c[0] as { provider: string }).provider
+    )
+    expect(synced).toEqual(['openai', 'llamacpp'])
+    // The web branch must never unregister desktop-registered providers.
+    const unregisterCalls = h.invoke.mock.calls.filter(
+      (c) => c[0] === 'unregister_provider_config'
+    )
+    expect(unregisterCalls.length).toBe(0)
   })
 
   it('registers a listener for onModelImported events', async () => {

@@ -74,6 +74,11 @@ function ModelProviders() {
         ...(apiType === 'anthropic' ? { api_type: 'anthropic' as const } : {}),
       }
       addProvider(newProvider)
+      // Persist the new provider into the shared backend store right away.
+      // On web this is what makes it survive a refresh and show up on the
+      // desktop / other devices (the browser's localStorage is not shared);
+      // on desktop it's a no-op (boot write-through covers it).
+      void serviceHub.providers().syncProviderToBackend(newProvider as ModelProvider)
       setTimeout(() => {
         navigate({
           to: route.settings.providers,
@@ -83,7 +88,7 @@ function ModelProviders() {
         })
       }, 0)
     },
-    [providers, addProvider, t, navigate]
+    [providers, addProvider, t, navigate, serviceHub]
   )
 
   return (

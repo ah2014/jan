@@ -6,6 +6,7 @@ import { backendStorage } from '@/lib/backendStorage'
 import { modelSettings } from '@/lib/predefined'
 import { predefinedProviders } from '@/constants/providers'
 import { isLocalProvider } from '@/lib/utils'
+import { isPlatformTauri } from '@/lib/platform/utils'
 import { API_KEY_FALLBACKS_SETTING_KEY } from '@/lib/provider-api-keys'
 
 const API_KEY_SETTING_KEY = 'api-key'
@@ -209,9 +210,33 @@ export const useModelProvider = create<ModelProviderState>()(
             // API keys live only in the OS keyring, never in provider settings.
             // The in-memory chain is preserved from existing state or the
             // keyring-seeded incoming provider (DataProvider).
+            //
+            // `persist` providers (local engines on desktop, backend-registered
+            // custom providers on web) take the incoming list as authoritative.
+            // On web there is no engine, though — incoming is just the backend
+            // snapshot, which can lag behind this browser's edits (write-through
+            // failure, offline, pre-feature localStorage). Union browser-local
+            // models back in so a refresh never silently drops them; delete
+            // tombstones still win. Desktop keeps engine-authoritative
+            // semantics (a model removed on disk must not resurrect).
+            const persistModels =
+              (updatedModels ?? []).filter(
+                (m) => !effectiveDeletedModels.includes(m.id)
+              ) ?? []
+            const persistModelsWithLocal =
+              provider.persist && !isPlatformTauri()
+                ? [
+                    ...persistModels,
+                    ...models.filter(
+                      (m) =>
+                        !effectiveDeletedModels.includes(m.id) &&
+                        !persistModels.some((um) => um.id === m.id)
+                    ),
+                  ]
+                : persistModels
             return {
               ...provider,
-              models: provider.persist ? updatedModels : mergedModels,
+              models: provider.persist ? persistModelsWithLocal : mergedModels,
               settings: mergedSettings,
               api_key: existingProvider?.api_key || provider.api_key,
               api_key_fallbacks:

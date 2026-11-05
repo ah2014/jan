@@ -21,6 +21,7 @@ import {
 } from '@tabler/icons-react'
 import { useMatches, useNavigate } from '@tanstack/react-router'
 import { cn } from '@/lib/utils'
+import { getServiceHub } from '@/hooks/useServiceHub'
 
 import { useModelProvider } from '@/hooks/useModelProvider'
 import { getProviderTitle, isLocalProvider } from '@/lib/utils'
@@ -78,6 +79,10 @@ const SettingsMenu = () => {
         ...(apiType === 'anthropic' ? { api_type: 'anthropic' as const } : {}),
       }
       addProvider(newProvider)
+      // Persist the new provider into the shared backend store right away
+      // (web: makes it survive refresh + show on other devices; desktop: no-op
+      // — boot write-through covers it).
+      void getServiceHub().providers().syncProviderToBackend(newProvider as ModelProvider)
       setTimeout(() => {
         navigate({
           to: route.settings.providers,
