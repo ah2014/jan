@@ -1135,6 +1135,9 @@ fn provider_config_from_section(section: ProviderSection) -> ProviderConfig {
         custom_headers: Vec::new(),
         models: section.models,
         api_type: section.api_type,
+        // Per-model capability overrides are a desktop/web-UI concept; the
+        // CLI's config files never carry them.
+        model_capabilities: Default::default(),
         compaction_ratio: section.compaction_ratio,
     }
 }
@@ -1269,6 +1272,7 @@ fn provider_from_json(p: &serde_json::Value) -> Option<ProviderConfig> {
         custom_headers: Vec::new(),
         models,
         api_type,
+        model_capabilities: Default::default(),
         compaction_ratio: None,
     })
 }
@@ -1330,6 +1334,7 @@ fn synthesized(provider: &str) -> ProviderConfig {
         custom_headers: Vec::new(),
         models: Vec::new(),
         api_type: None,
+        model_capabilities: Default::default(),
         compaction_ratio: None,
     }
 }

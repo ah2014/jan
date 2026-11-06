@@ -1,3 +1,7 @@
+// Desktop-only (Tauri AppHandle): the remote-attach allow-list store. The
+// headless CLI has no attach picker; `filesystem` (its caller) is gated off
+// there too.
+#[cfg(not(feature = "cli"))]
 pub mod attach_paths_store;
 // The proxy server and its Tauri command surface are desktop-only; the `jan`
 // CLI is a headless agent client with no local API server.

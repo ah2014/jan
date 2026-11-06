@@ -123,12 +123,22 @@ else
   ok "resources/bin/bun present"
 fi
 
-# 7. jan-cli (bundled as a deb resource)
-if need src-tauri/resources/bin/jan-cli; then
-  say "Building jan-cli..."
+# 7. jan CLI (bundled as a deb resource; `make build-cli` outputs `jan`)
+if need src-tauri/resources/bin/jan; then
+  say "Building jan CLI..."
   make build-cli
 else
-  ok "jan-cli present"
+  ok "jan CLI present"
+fi
+
+# 7b. llama.cpp engine worker (jan-llama-worker + libggml*.so libs) — required
+#     by the bundle resources; without it the tauri build fails on a missing
+#     resource (or worse, bundles a stub). Skip only when a real worker exists.
+if need src-tauri/resources/bin/jan-llama-worker; then
+  say "Building llama.cpp engine worker (variant: ${JAN_ENGINE_VARIANT:-vulkan})..."
+  make build-engine
+else
+  ok "jan-llama-worker present (skip engine build)"
 fi
 
 # 8. Optional clean of previous deb output
